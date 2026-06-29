@@ -1,0 +1,69 @@
+custom_ekf_node:
+  ros__parameters:
+    frequency: 20.0
+    sensor_timeout: 0.5
+
+    odom_topic: /odom_raw
+    camera_topic: /odom_camera
+    imu_topic: /imu/data
+    output_topic: /odometry/filtered
+    reset_topic: /reset_odom
+
+    odom_frame: odom
+    base_link_frame: base_link
+    publish_tf: true
+
+    # === SENSOR FUSION FLAGS ===
+    # ┌─────────────────────────────────────────────────────────────┐
+    # │ Encoder: CHỈ đóng góp v, w (prediction + measurement)     │
+    # │ Camera:  Cung cấp x, y, yaw tuyệt đối (absolute update)  │
+    # │ IMU:     Cung cấp w (angular velocity measurement)        │
+    # └─────────────────────────────────────────────────────────────┘
+    use_odom_pose: false          # TẮT: Encoder position xung đột frame với camera. Encoder đã đóng góp qua predict(v,w).
+    use_odom_yaw: false           # TẮT: Encoder yaw drift dài hạn → camera yaw thay thế.
+    use_odom_w: true              # BẬT: Encoder angular velocity → frame-agnostic, dùng tốt.
+    use_camera_pose: true         # BẬT: Camera X, Y tuyệt đối (đã calibrate).
+    use_camera_yaw: true          # BẬT: Camera yaw tuyệt đối.
+    use_camera_yaw_for_alignment: true
+    use_imu_w: false              # TẮT: IMU đang bị sai dấu hoặc scale, dẫn đến triệt tiêu odom_w làm EKF đi thẳng!
+    imu_w_sign: 1.0
+    odom_w_sign: 1.0
+
+    # === ALIGNMENT ===
+    # BẬT: Camera frame đầu tiên dùng để tính offset → tất cả frame sau
+    # được transform về hệ odom (0,0,0) → KHÔNG BAO GIỜ xung đột frame.
+    align_camera_to_odom: true
+
+    # === INITIAL COVARIANCE P0 ===
+    initial_covariance: 0.10
+
+    # === PROCESS NOISE Q ===
+    # Mô hình hóa "robot có thể sai bao nhiêu mỗi bước dự đoán"
+    # Q nhỏ → tin encoder hơn | Q lớn → tin cảm biến đo hơn
+    process_noise_x: 0.001        # Tăng nhẹ so với trước (0.0004) để EKF responsive hơn với camera
+    process_noise_y: 0.001
+    process_noise_theta: 0.001
+    process_noise_v: 0.08
+    process_noise_w: 0.12
+
+    # === MEASUREMENT NOISE R (Encoder / Odom) ===
+    odom_x_variance: 0.05         # Không dùng (use_odom_pose=false) nhưng giữ cho tham khảo
+    odom_y_variance: 0.05
+    odom_yaw_variance: 1.00
+    odom_v_variance: 0.02         # Encoder tốc độ thẳng: khá tin
+    odom_w_variance: 0.10         # Giảm từ 0.60 → tin encoder w hơn (nó cần để predict theta)
+
+    # === MEASUREMENT NOISE R (Camera AprilTag) ===
+    use_camera_msg_covariance: false   # Dùng R bên dưới làm nguồn tune chính, không bị covariance trong /odom_camera ghi đè
+    # Test tĩnh: std_x=0.56cm, std_y=0.19cm, std_yaw=0.039°
+    # Dynamic: tăng ~10x để EKF lọc nhiễu motion blur + rung lắc
+    camera_x_variance: 0.0004       # std ≈ 2 cm
+    camera_y_variance: 0.0004       # std ≈ 2 cm
+    camera_yaw_variance: 0.0003     # std ≈ 1 deg
+
+    # === MEASUREMENT NOISE R (IMU) ===
+    imu_w_variance: 0.01            # Tăng từ 0.005 → cho EKF cân bằng hơn giữa IMU và encoder w
+
+    # === OUTLIER REJECTION ===
+    max_jump_xy: 0.50               # Tăng từ 0.30 → nới lỏng để camera không bị reject oan
+    max_jump_yaw: 1.05              # Tăng từ 0.52 → cho phép yaw nhảy tới 60° (thay vì 30°)
