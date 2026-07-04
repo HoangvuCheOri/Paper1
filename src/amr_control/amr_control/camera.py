@@ -210,7 +210,7 @@ class CameraPoseEstimator(Node):
         self.camera_thread.start()
 
         # Timer loop (thay thế cho while loop & rate.sleep() của ROS 1)
-        timer_period = 1.0 / 30.0  # 30 Hz
+        timer_period = 1.0 / 20  # 30 Hz
         self.timer = self.create_timer(timer_period, self.timer_callback)
 
         self.get_logger().info(
@@ -655,7 +655,7 @@ class CameraPoseEstimator(Node):
             # pos_floor[1] = xuống dưới trên màn hình (trục Y cố định)
             # Chuyển sang hệ tọa độ của hệ thống (X hướng Lên, Y hướng Trái)
             # Dựa trên test độc lập: Tiến 1.0m X đo ra 1.2m -> Khử giãn hình dọc chia 1.2
-            robot_x = (-pos_floor[1, 0]) / 1.2
+            robot_x = (-pos_floor[1, 0])
             robot_y = -pos_floor[0, 0]
             
             # Hệ tọa độ Yaw mới: X hướng LÊN (0 độ), Y hướng SANG TRÁI (90 độ)

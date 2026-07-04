@@ -19,7 +19,7 @@ class BSMCCircle(Node):
         self.desired_mode_pub = self.create_publisher(String, '/desired_trajectory_mode', 10)
 
         self.odom_sub = self.create_subscription(
-            Odometry, '/odometry/filtered', self.odom_callback, 10
+            Odometry, '/odom_camera', self.odom_callback, 10
         )
 
         self.current_x = 0.0
