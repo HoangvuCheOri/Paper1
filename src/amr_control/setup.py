@@ -26,6 +26,8 @@ setup(
             'state_bridge = amr_control.state_bridge:main',
             'custom_ekf_node = amr_control.custom_ekf_node:main',
             'bsmc_circle = amr_control.bsmc_circle:main',
+            'bsmc_eight = amr_control.bsmc_eight:main',
+            'bsmc_square = amr_control.bsmc_square:main',
             'robot_serial_bridge = amr_control.robot_serial_bridge:main',
             'camera_node = amr_control.camera:main',
             'keyboard_teleop = amr_control.keyboard_teleop:main',
