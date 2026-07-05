@@ -61,6 +61,24 @@ class StateBridgeNode(Node):
     def __init__(self):
         super().__init__('state_bridge_node')
 
+        self.declare_parameter('wheel_diameter', self.WHEEL_DIAMETER)
+        self.declare_parameter('wheel_base', self.WHEEL_BASE)
+        self.declare_parameter('wheel_calib_l', self.WHEEL_CALIB_L)
+        self.declare_parameter('odom_scale_factor', self.ODOM_SCALE_FACTOR)
+        self.declare_parameter('gyro_z_sign', 1.0)
+        self.declare_parameter('lpf_alpha', self.LPF_ALPHA)
+        self.declare_parameter('packet_loss_threshold', self.PACKET_LOSS_THRESHOLD)
+
+        self.wheel_diameter = float(self.get_parameter('wheel_diameter').value)
+        self.wheel_base = float(self.get_parameter('wheel_base').value)
+        self.wheel_calib_l = float(self.get_parameter('wheel_calib_l').value)
+        self.odom_scale_factor = float(self.get_parameter('odom_scale_factor').value)
+        self.gyro_z_sign = float(self.get_parameter('gyro_z_sign').value)
+        self.lpf_alpha = float(self.get_parameter('lpf_alpha').value)
+        self.packet_loss_threshold = float(
+            self.get_parameter('packet_loss_threshold').value
+        )
+
         self.state_sub = self.create_subscription(
             Float32MultiArray, '/robot_state', self.state_callback, 10
         )
@@ -87,8 +105,15 @@ class StateBridgeNode(Node):
 
         self.get_logger().info(
             "StateBridge (ESP-NOW hardened): "
-            "PACKET_LOSS_THRESHOLD=%.3fs  LPF_ALPHA=%.2f" %
-            (self.PACKET_LOSS_THRESHOLD, self.LPF_ALPHA)
+            "wheel_diameter=%.3fm  wheel_base=%.3fm  gyro_z_sign=%.1f  "
+            "packet_loss_threshold=%.3fs  lpf_alpha=%.2f" %
+            (
+                self.wheel_diameter,
+                self.wheel_base,
+                self.gyro_z_sign,
+                self.packet_loss_threshold,
+                self.lpf_alpha,
+            )
         )
 
     def reset_callback(self, msg):
@@ -119,7 +144,7 @@ class StateBridgeNode(Node):
         # Nếu dt quá lớn: nhiều khả năng có 1+ gói bị drop trước gói này.
         # Tích phân với dt lớn sẽ làm odometry nhảy. Dùng dt nominal thay thế
         # nhưng log cảnh báo để biết tỉ lệ drop.
-        if dt > self.PACKET_LOSS_THRESHOLD:
+        if dt > self.packet_loss_threshold:
             self._pkt_drop += 1
             drop_rate = 100.0 * self._pkt_drop / self._pkt_total
             self.get_logger().warn(
@@ -132,27 +157,26 @@ class StateBridgeNode(Node):
             dt = self.DT
         else:
             # Clamp dt bình thường trong khoảng hợp lệ
-            dt = max(0.02, min(dt, self.PACKET_LOSS_THRESHOLD))
+            dt = max(0.02, min(dt, self.packet_loss_threshold))
 
         # ── Giải mã ─────────────────────────────────────────────────────
         rpm_L_raw = float(msg.data[0]) / 10.0
         rpm_R     = float(msg.data[1]) / 10.0
-        # Đảo dấu gyro_z để khớp chuẩn ROS2 (quay CCW là dương)
-        gyro_z    = float(msg.data[2]) / 1000.0
+        gyro_z = self.gyro_z_sign * float(msg.data[2]) / 1000.0
 
         # Hệ số hiệu chỉnh bánh trái (khớp STM32 1.22f)
-        rpm_L = math.copysign(abs(rpm_L_raw) * self.WHEEL_CALIB_L, rpm_L_raw)
+        rpm_L = math.copysign(abs(rpm_L_raw) * self.wheel_calib_l, rpm_L_raw)
 
         # ── Forward kinematics ──────────────────────────────────────────
-        v_L = rpm_L * (math.pi * self.WHEEL_DIAMETER / 60.0)
-        v_R = rpm_R * (math.pi * self.WHEEL_DIAMETER / 60.0)
+        v_L = rpm_L * (math.pi * self.wheel_diameter / 60.0)
+        v_R = rpm_R * (math.pi * self.wheel_diameter / 60.0)
 
         v_raw     = (v_R + v_L) / 2.0
-        w_enc_raw = (v_R - v_L) / self.WHEEL_BASE
+        w_enc_raw = (v_R - v_L) / self.wheel_base
 
         # ── Low-pass filter (giảm chattering từ jitter ESP-NOW) ─────────
-        v     = self.LPF_ALPHA * v_raw     + (1.0 - self.LPF_ALPHA) * self._v_filt
-        w_enc = self.LPF_ALPHA * w_enc_raw + (1.0 - self.LPF_ALPHA) * self._w_filt
+        v     = self.lpf_alpha * v_raw     + (1.0 - self.lpf_alpha) * self._v_filt
+        w_enc = self.lpf_alpha * w_enc_raw + (1.0 - self.lpf_alpha) * self._w_filt
         self._v_filt = v
         self._w_filt = w_enc
 
@@ -165,8 +189,8 @@ class StateBridgeNode(Node):
         self.theta  = math.atan2(math.sin(self.theta), math.cos(self.theta))
 
         theta_mid = (theta_old + self.theta) / 2.0
-        self.x += v * math.cos(theta_mid) * dt * self.ODOM_SCALE_FACTOR
-        self.y += v * math.sin(theta_mid) * dt * self.ODOM_SCALE_FACTOR
+        self.x += v * math.cos(theta_mid) * dt * self.odom_scale_factor
+        self.y += v * math.sin(theta_mid) * dt * self.odom_scale_factor
 
         # ── Publish ──────────────────────────────────────────────────────
         stamp = self.get_clock().now().to_msg()

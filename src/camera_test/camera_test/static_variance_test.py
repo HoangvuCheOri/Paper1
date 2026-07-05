@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """
+Measure camera pose variance while the robot is stationary.
+
 Test 1: Robot đứng yên 60s → Log /odom_camera → Tính std_x, std_y, std_yaw
 → Đây chính là R thực tế cho EKF.
 
 Cách chạy:
   Terminal 1: ros2 run amr_control camera_node
-  Terminal 2: cd ~/ros2_ws && source install/setup.bash && python3 src/camera_test/camera_test/static_variance_test.py
+  Terminal 2:
+    cd ~/ros2_ws && source install/setup.bash
+    python3 src/camera_test/camera_test/static_variance_test.py
 
 Robot phải ĐỨNG YÊN trong khi chạy script này!
 """

@@ -17,6 +17,7 @@ import threading
 import queue
 import pupil_apriltags as apriltag
 import yaml
+from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from collections import deque
 from datetime import datetime
 
@@ -93,10 +94,16 @@ class CameraPoseEstimator(Node):
         self.declare_parameter('warp_height', 720)
         self.declare_parameter('warp_src_points', '')
         self.declare_parameter('warp_yaml_path', 'camera_warp.yaml')
+        self.declare_parameter('display_resize', False)
+        self.declare_parameter('display_width', 1280)
+        self.declare_parameter('display_height', 720)
         self.declare_parameter('prefilter_pose', False)
         self.declare_parameter('camera_x_variance', 0.0004)
         self.declare_parameter('camera_y_variance', 0.0004)
         self.declare_parameter('camera_yaw_variance', 0.0003)
+        self.declare_parameter('floor_homography_path', 'floor_homography.yaml')
+        self.declare_parameter('homography_scale_x', 1.0)
+        self.declare_parameter('homography_scale_y', 1.0)
 
         self.yaml_path = self.get_parameter('yaml_path').value
         self.draw_trajectory_enabled = bool(self.get_parameter('draw_trajectory').value)
@@ -123,6 +130,9 @@ class CameraPoseEstimator(Node):
         self.warp_height = int(self.get_parameter('warp_height').value)
         self.warp_src_points_text = self.get_parameter('warp_src_points').value
         self.warp_yaml_path = self.get_parameter('warp_yaml_path').value
+        self.display_resize = bool(self.get_parameter('display_resize').value)
+        self.display_width = int(self.get_parameter('display_width').value)
+        self.display_height = int(self.get_parameter('display_height').value)
         self.prefilter_pose = bool(self.get_parameter('prefilter_pose').value)
         self.camera_x_variance = max(
             float(self.get_parameter('camera_x_variance').value),
@@ -136,10 +146,17 @@ class CameraPoseEstimator(Node):
             float(self.get_parameter('camera_yaw_variance').value),
             1e-9,
         )
+        self.floor_homography_path = self.get_parameter('floor_homography_path').value
+        self.homography_scale_x = float(self.get_parameter('homography_scale_x').value)
+        self.homography_scale_y = float(self.get_parameter('homography_scale_y').value)
+
         self.warp_matrix = None
         self.warp_src_points = None
         self.warp_calibrating = False
         self.warp_calibration_points = []
+
+        self.homography_matrix = None
+        self.load_floor_homography()
 
         max_points = max(2, int(self.get_parameter('trajectory_max_points').value))
         self.trajectory_points = deque(maxlen=max_points)
@@ -220,6 +237,7 @@ class CameraPoseEstimator(Node):
             f"auto_align_yaw={self.trajectory_auto_align_yaw}, "
             f"undistort_display={self.undistort_display}, "
             f"warp_enabled={self.warp_enabled}, "
+            f"display_resize={self.display_resize}, "
             f"prefilter_pose={self.prefilter_pose}"
         )
 
@@ -258,6 +276,40 @@ class CameraPoseEstimator(Node):
             self.get_logger().info(f"Initial position saved to {self.yaml_path}")
         except Exception as e:
             self.get_logger().error(f"Failed to save pose to yaml: {e}")
+
+    def load_floor_homography(self):
+        candidate_paths = [self.floor_homography_path]
+        if not os.path.isabs(self.floor_homography_path):
+            try:
+                candidate_paths.append(
+                    os.path.join(
+                        get_package_share_directory('amr_control'),
+                        'config',
+                        os.path.basename(self.floor_homography_path),
+                    )
+                )
+            except PackageNotFoundError:
+                pass
+
+        homography_path = next((p for p in candidate_paths if os.path.exists(p)), None)
+        if homography_path is not None:
+            try:
+                with open(homography_path, "r") as f:
+                    data = yaml.safe_load(f) or {}
+                h_mat = data.get('homography_matrix')
+                if h_mat and len(h_mat) == 3:
+                    self.homography_matrix = np.array(h_mat, dtype=np.float32)
+                    self.get_logger().info(f"Loaded FLOOR HOMOGRAPHY from {homography_path}")
+                else:
+                    self.get_logger().warn(f"Invalid homography matrix format in {homography_path}")
+            except Exception as exc:
+                self.get_logger().error(f"Failed to load floor homography yaml: {exc}")
+        else:
+            searched = ', '.join(candidate_paths)
+            self.get_logger().warn(
+                f"Floor homography file not found. Searched: {searched}. "
+                "Using fallback solvePnP for XY."
+            )
 
     def parse_warp_points(self, text):
         if not text:
@@ -600,23 +652,9 @@ class CameraPoseEstimator(Node):
         scaled_camera_matrix = camera_matrix.copy()
         dist_coeffs = self.dist_coeffs
 
-        if self.undistort_display:
-            camera_matrix, _ = cv2.getOptimalNewCameraMatrix(
-                scaled_camera_matrix,
-                self.dist_coeffs,
-                (w_in, h_in),
-                self.undistort_alpha,
-                (w_in, h_in),
-            )
-            frame = cv2.undistort(
-                frame,
-                scaled_camera_matrix,
-                self.dist_coeffs,
-                None,
-                camera_matrix,
-            )
-            dist_coeffs = self.zero_dist_coeffs
-
+        # ===== DETECT TRÊN ẢNH GỐC (FISHEYE) =====
+        # Vì Homography được calib trên ảnh fisheye, nên phải detect trên cùng loại ảnh.
+        # solvePnP cũng xử lý đúng với dist_coeffs gốc.
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         detections = self.detector.detect(gray)
@@ -648,18 +686,34 @@ class CameraPoseEstimator(Node):
             # Nó không bị thay đổi dù robot (tag) có xoay tròn tại chỗ.
             R_floor2cam = R_orig @ Rz_yaw.T  
             
-            # Chiếu tọa độ tvec (trong hệ camera) xuống mặt phẳng sàn (đã khử nghiêng)
-            pos_floor = R_floor2cam.T @ tvec
+            tag_center = np.mean(img_pts, axis=0)
+
+            if self.homography_matrix is not None:
+                # ---------------------------------------------------------
+                # SỬ DỤNG HOMOGRAPHY ĐỂ TÍNH X, Y (CỰC KỲ CHÍNH XÁC THEO SÀN)
+                # ---------------------------------------------------------
+                pixel_h = np.array([[tag_center[0]], [tag_center[1]], [1.0]], dtype=np.float32)
+                computed = self.homography_matrix @ pixel_h
+                computed_x = float(computed[0, 0] / computed[2, 0])
+                computed_y = float(computed[1, 0] / computed[2, 0])
+
+                # Chuyển đổi sang hệ trục Toán học (X = Sang Phải, Y = Lên Trên)
+                # Áp dụng hệ số bù méo ống kính (barrel distortion compensation)
+                robot_x = computed_x * self.homography_scale_x
+                robot_y = computed_y * self.homography_scale_y
+            else:
+                # ---------------------------------------------------------
+                # DÙNG SOLVEPNP DỰ PHÒNG NẾU KHÔNG CÓ FILE HOMOGRAPHY
+                # ---------------------------------------------------------
+                # Chiếu tọa độ tvec (trong hệ camera) xuống mặt phẳng sàn (đã khử nghiêng)
+                pos_floor = R_floor2cam.T @ tvec
+                # Chuyển sang hệ trục Toán học (X = Sang Phải, Y = Lên Trên)
+                # pos_floor[0] là Right, pos_floor[1] là Down
+                robot_x = pos_floor[0, 0]
+                robot_y = -pos_floor[1, 0]
             
-            # pos_floor[0] = sang phải trên màn hình (trục X cố định)
-            # pos_floor[1] = xuống dưới trên màn hình (trục Y cố định)
-            # Chuyển sang hệ tọa độ của hệ thống (X hướng Lên, Y hướng Trái)
-            # Dựa trên test độc lập: Tiến 1.0m X đo ra 1.2m -> Khử giãn hình dọc chia 1.2
-            robot_x = (-pos_floor[1, 0])
-            robot_y = -pos_floor[0, 0]
-            
-            # Hệ tọa độ Yaw mới: X hướng LÊN (0 độ), Y hướng SANG TRÁI (90 độ)
-            yaw_deg = normalize_angle_deg(-(math.degrees(yaw_cam) + 90.0))
+            # Hệ tọa độ Yaw mới: X hướng Phải (0 độ), Y hướng Lên Trên (+90 độ)
+            yaw_deg = normalize_angle_deg(-math.degrees(yaw_cam))
 
             if self.last_raw_yaw_deg is None:
                 self.raw_yaw_unwrapped = yaw_deg
@@ -776,16 +830,24 @@ class CameraPoseEstimator(Node):
 
         self.draw_trajectory_overlay(frame, camera_matrix)
         self.draw_warp_calibration(frame)
+
         display_frame = self.apply_warp(frame)
 
-        # KÉO GIÃN 16:9 TRƯỚC KHI HIỂN THỊ
-        display_frame = cv2.resize(display_frame, (1280, 720))
+        if self.display_resize:
+            display_frame = cv2.resize(
+                display_frame,
+                (self.display_width, self.display_height),
+                interpolation=cv2.INTER_LINEAR,
+            )
 
+        display_h, display_w = display_frame.shape[:2]
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cv2.rectangle(display_frame, (815, 0), (1280, 70), (0, 0, 0), -1)
-        cv2.putText(display_frame, timestamp, (920, 45),
+        timestamp_box_x = max(0, display_w - 465)
+        timestamp_text_x = max(10, display_w - 360)
+        cv2.rectangle(display_frame, (timestamp_box_x, 0), (display_w, 70), (0, 0, 0), -1)
+        cv2.putText(display_frame, timestamp, (timestamp_text_x, 45),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3, cv2.LINE_AA)
-        cv2.putText(display_frame, timestamp, (920, 45),
+        cv2.putText(display_frame, timestamp, (timestamp_text_x, 45),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
 
         if self.pose['x'] is not None and self.pose['y'] is not None and self.pose['yaw'] is not None:

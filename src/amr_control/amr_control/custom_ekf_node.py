@@ -34,8 +34,8 @@ class CustomEkfNode(Node):
     Lightweight 2D EKF for differential-drive AMR.
 
     State: [x, y, theta, v, w]
-      - /odom_raw initializes x/y/yaw and updates v/yaw/w in the controller odom frame
-      - /odom_camera is aligned into the odom frame before optional x/y correction
+      - /odom_camera initializes and corrects absolute x/y/yaw in the calibrated map frame
+      - /odom_raw updates v/yaw-rate only, so encoder drift does not fight camera pose
       - /imu/data can be enabled as an alternate yaw-rate source only
       - prediction integrates v and w into x, y, theta
     """
@@ -53,16 +53,22 @@ class CustomEkfNode(Node):
         self.declare_parameter('odom_frame', 'odom')
         self.declare_parameter('base_link_frame', 'base_link')
         self.declare_parameter('publish_tf', True)
-        self.declare_parameter('use_odom_pose', True)
-        self.declare_parameter('use_odom_yaw', True)
+        self.declare_parameter('use_odom_pose', False)
+        self.declare_parameter('use_odom_yaw', False)
         self.declare_parameter('use_odom_w', True)
-        self.declare_parameter('use_camera_pose', False)
-        self.declare_parameter('use_camera_yaw', False)
-        self.declare_parameter('use_camera_yaw_for_alignment', True)
+        self.declare_parameter('use_camera_pose', True)
+        self.declare_parameter('use_camera_yaw', True)
+        self.declare_parameter('use_camera_yaw_for_alignment', False)
         self.declare_parameter('use_imu_w', False)
         self.declare_parameter('imu_w_sign', 1.0)
         self.declare_parameter('odom_w_sign', 1.0)
-        self.declare_parameter('align_camera_to_odom', True)
+        self.declare_parameter('align_camera_to_odom', False)
+        self.declare_parameter('camera_aligned_topic', '/odom_camera_aligned')
+        self.declare_parameter('camera_delta_m00', 1.0)
+        self.declare_parameter('camera_delta_m01', 0.0)
+        self.declare_parameter('camera_delta_m10', 0.0)
+        self.declare_parameter('camera_delta_m11', 1.0)
+        self.declare_parameter('camera_yaw_sign', 1.0)
 
         self.declare_parameter('initial_covariance', 0.05)
         self.declare_parameter('process_noise_x', 0.002)
@@ -108,6 +114,18 @@ class CustomEkfNode(Node):
         self.imu_w_sign = float(self.get_parameter('imu_w_sign').value)
         self.odom_w_sign = float(self.get_parameter('odom_w_sign').value)
         self.align_camera_to_odom = bool(self.get_parameter('align_camera_to_odom').value)
+        self.camera_aligned_topic = self.get_parameter('camera_aligned_topic').value
+        self.camera_delta_matrix = np.array([
+            [
+                float(self.get_parameter('camera_delta_m00').value),
+                float(self.get_parameter('camera_delta_m01').value),
+            ],
+            [
+                float(self.get_parameter('camera_delta_m10').value),
+                float(self.get_parameter('camera_delta_m11').value),
+            ],
+        ], dtype=float)
+        self.camera_yaw_sign = float(self.get_parameter('camera_yaw_sign').value)
 
         initial_covariance = float(self.get_parameter('initial_covariance').value)
         self.x = np.zeros((5, 1), dtype=float)
@@ -138,12 +156,17 @@ class CustomEkfNode(Node):
         self.max_jump_yaw = float(self.get_parameter('max_jump_yaw').value)
         self.camera_reject_count = 0
 
+        self.last_v_state = 0.0
+        self.last_w_state = 0.0
+
         self.initialized = False
         self.last_predict_time = None
         self.last_odom_time = None
         self.last_camera_time = None
         self.last_imu_time = None
         self.camera_alignment = None
+        self.last_aligned_camera_pose = None
+        self.last_aligned_camera_time = None
 
         self.odom_sub = self.create_subscription(
             Odometry, self.odom_topic, self.odom_callback, 10
@@ -158,7 +181,9 @@ class CustomEkfNode(Node):
             Empty, self.reset_topic, self.reset_callback, 10
         )
         self.odom_pub = self.create_publisher(Odometry, self.output_topic, 10)
-        self.camera_aligned_pub = self.create_publisher(Odometry, '/odom_camera_aligned', 10)
+        self.camera_aligned_pub = self.create_publisher(
+            Odometry, self.camera_aligned_topic, 10
+        )
 
         self.tf_broadcaster = TransformBroadcaster(self) if self.publish_tf else None
 
@@ -170,7 +195,8 @@ class CustomEkfNode(Node):
             f"{self.odom_topic} + {self.camera_topic} + {self.imu_topic} -> {self.output_topic}, "
             f"publish_tf={self.publish_tf}, "
             f"use_camera_pose={self.use_camera_pose}, use_camera_yaw={self.use_camera_yaw}, "
-            f"align_camera_to_odom={self.align_camera_to_odom}"
+            f"align_camera_to_odom={self.align_camera_to_odom}, "
+            f"camera_aligned_topic={self.camera_aligned_topic}"
         )
 
     def now_sec(self):
@@ -187,7 +213,14 @@ class CustomEkfNode(Node):
         self.last_camera_time = None
         self.last_imu_time = None
         self.camera_alignment = None
-        self.get_logger().info("Custom EKF reset. Waiting for /odom_raw.")
+        self.last_aligned_camera_pose = None
+        self.last_aligned_camera_time = None
+        self.last_v_state = 0.0
+        self.last_w_state = 0.0
+        if self.align_camera_to_odom:
+            self.get_logger().info("Custom EKF reset. Waiting for /odom_raw.")
+        else:
+            self.get_logger().info("Custom EKF reset. Waiting for /odom_camera.")
 
     def initialize_from_odom(self, msg, now_s):
         yaw = yaw_from_quaternion(msg.pose.pose.orientation)
@@ -232,7 +265,17 @@ class CustomEkfNode(Node):
         f[1, 3] = math.sin(theta) * dt
         f[2, 4] = dt
 
-        self.p = f @ self.p @ f.T + self.q_base * dt
+        delta_v = abs(self.x[3, 0] - self.last_v_state)
+        delta_w = abs(self.x[4, 0] - self.last_w_state)
+        self.last_v_state = float(self.x[3, 0])
+        self.last_w_state = float(self.x[4, 0])
+
+        q_adaptive = self.q_base.copy()
+        q_adaptive[0, 0] += delta_v * 0.01  # Tăng noise X khi gia tốc cao
+        q_adaptive[1, 1] += delta_v * 0.01  # Tăng noise Y khi gia tốc cao
+        q_adaptive[2, 2] += delta_w * 0.01  # Tăng noise Yaw khi gia tốc góc cao
+
+        self.p = f @ self.p @ f.T + q_adaptive * dt
         self.p = 0.5 * (self.p + self.p.T)
         self.last_predict_time = now_s
 
@@ -343,9 +386,15 @@ class CustomEkfNode(Node):
             return
 
         self.predict_to(now_s)
-        self.last_camera_time = now_s
         aligned_msg = self.align_camera_msg(msg)
-        self.camera_aligned_pub.publish(aligned_msg)
+
+        if self.aligned_camera_is_outlier(aligned_msg, now_s):
+            self.camera_reject_count += 1
+            self.get_logger().warn(
+                f"Camera aligned jump rejected (#{self.camera_reject_count})",
+                throttle_duration_sec=1.0,
+            )
+            return
 
         z_values = []
         h_rows = []
@@ -410,6 +459,15 @@ class CustomEkfNode(Node):
 
             self.ekf_update(z, h, r)
 
+        self.last_camera_time = now_s
+        self.last_aligned_camera_pose = (
+            float(aligned_msg.pose.pose.position.x),
+            float(aligned_msg.pose.pose.position.y),
+            yaw_from_quaternion(aligned_msg.pose.pose.orientation),
+        )
+        self.last_aligned_camera_time = now_s
+        self.camera_aligned_pub.publish(aligned_msg)
+
     def imu_callback(self, msg):
         if not self.use_imu_w:
             return
@@ -466,6 +524,26 @@ class CustomEkfNode(Node):
                 throttle_duration_sec=2.0,
             )
 
+    def aligned_camera_is_outlier(self, msg, now_s):
+        if self.last_aligned_camera_pose is None:
+            return False
+
+        if (
+            self.last_aligned_camera_time is not None
+            and now_s - self.last_aligned_camera_time > max(1.0, 2.0 * self.sensor_timeout)
+        ):
+            return False
+
+        x = float(msg.pose.pose.position.x)
+        y = float(msg.pose.pose.position.y)
+        yaw = yaw_from_quaternion(msg.pose.pose.orientation)
+        last_x, last_y, last_yaw = self.last_aligned_camera_pose
+
+        jump_xy = math.hypot(x - last_x, y - last_y)
+        jump_yaw = abs(normalize_angle(yaw - last_yaw))
+
+        return jump_xy > self.max_jump_xy or jump_yaw > self.max_jump_yaw
+
     def align_camera_msg(self, msg):
         cam_x = msg.pose.pose.position.x
         cam_y = msg.pose.pose.position.y
@@ -482,6 +560,9 @@ class CustomEkfNode(Node):
             aligned.pose.pose.position.z = 0.0
             aligned.pose.pose.orientation = msg.pose.pose.orientation
             aligned.pose.covariance = list(msg.pose.covariance)
+            aligned.pose.covariance[0] = self.r_camera_x
+            aligned.pose.covariance[7] = self.r_camera_y
+            aligned.pose.covariance[35] = self.r_camera_yaw
             aligned.twist.twist = msg.twist.twist
             aligned.twist.covariance = list(msg.twist.covariance)
             return aligned
@@ -503,8 +584,11 @@ class CustomEkfNode(Node):
             )
 
         a = self.camera_alignment
-        dx = cam_x - a['cam_x0']
-        dy = cam_y - a['cam_y0']
+        raw_delta = np.array([
+            cam_x - a['cam_x0'],
+            cam_y - a['cam_y0'],
+        ], dtype=float)
+        mapped_delta = self.camera_delta_matrix @ raw_delta
 
         if self.use_camera_yaw_for_alignment:
             rot = a['odom_yaw0'] - a['cam_yaw0']
@@ -514,10 +598,13 @@ class CustomEkfNode(Node):
         cos_r = math.cos(rot)
         sin_r = math.sin(rot)
 
-        aligned_x = a['odom_x0'] + cos_r * dx - sin_r * dy
-        aligned_y = a['odom_y0'] + sin_r * dx + cos_r * dy
+        aligned_dx = cos_r * mapped_delta[0] - sin_r * mapped_delta[1]
+        aligned_dy = sin_r * mapped_delta[0] + cos_r * mapped_delta[1]
+        aligned_x = a['odom_x0'] + aligned_dx
+        aligned_y = a['odom_y0'] + aligned_dy
         aligned_yaw = normalize_angle(
-            a['odom_yaw0'] + normalize_angle(cam_yaw - a['cam_yaw0'])
+            a['odom_yaw0']
+            + self.camera_yaw_sign * normalize_angle(cam_yaw - a['cam_yaw0'])
         )
 
         aligned = Odometry()
@@ -534,6 +621,9 @@ class CustomEkfNode(Node):
         aligned.pose.pose.orientation.z = qz
         aligned.pose.pose.orientation.w = qw
         aligned.pose.covariance = list(msg.pose.covariance)
+        aligned.pose.covariance[0] = self.r_camera_x
+        aligned.pose.covariance[7] = self.r_camera_y
+        aligned.pose.covariance[35] = self.r_camera_yaw
         aligned.twist.twist = msg.twist.twist
         aligned.twist.covariance = list(msg.twist.covariance)
         return aligned
