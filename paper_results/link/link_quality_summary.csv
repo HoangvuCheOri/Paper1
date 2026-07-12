@@ -1,0 +1,2 @@
+n_packets,duration_s,packet_rate_hz,median_period_ms,jitter95_ms,missing_packets,loss_percent,median_latency_ms,file,condition,distance_m
+374,28.107421875,13.306094086581892,49.94602394104004,127.63329582214259,246,39.67741935483871,nan,paper_logs/20260711_170627_espnow_Static.csv,Static,20.0

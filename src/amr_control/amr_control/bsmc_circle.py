@@ -19,23 +19,27 @@ class BSMCCircle(Node):
         self.desired_pub = self.create_publisher(Point, '/desired_trajectory', 10)
         self.desired_mode_pub = self.create_publisher(String, '/desired_trajectory_mode', 10)
 
+        # Controller feedback must be the camera + wheel-odometry EKF output.
+        # /odom_raw is prediction-only and must not be used for camera tests.
         self.declare_parameter('odom_topic', '/odometry/filtered')
-        self.declare_parameter('radius', 1.1)
+        self.declare_parameter('radius', 1.0)
         self.declare_parameter('angular_speed', 0.20)
         self.declare_parameter('control_frequency', 25.0)
         self.declare_parameter('startup_delay', 1.0)
         self.declare_parameter('settle_time', 2.0)
-        self.declare_parameter('k1', 0.40)
-        self.declare_parameter('k2', 2.4)
-        self.declare_parameter('k3', 3.5)
-        self.declare_parameter('ks1', 0.0)
-        self.declare_parameter('ks2', 0.0)
+        # Optuna TPE best gains (Trial 11, score=0.0477, rmse=3.85cm)
+        self.declare_parameter('k1', 1.163)
+        self.declare_parameter('k2', 4.499)
+        self.declare_parameter('k3', 3.300)
+        self.declare_parameter('ks1', 0.024)
+        self.declare_parameter('ks2', 0.295)
         self.declare_parameter('phi1', 1.0)
         self.declare_parameter('phi2', 1.5)
         self.declare_parameter('max_v', 0.18)
         self.declare_parameter('max_w', 0.85)
         self.declare_parameter('min_v', 0.0)
         self.declare_parameter('invert_ey', False)
+        self.declare_parameter('yaw_bias_gain', 0.02)
         self.declare_parameter('radius_feedback_gain', 0.60)
         self.declare_parameter('radius_position_gain', 0.40)
 
@@ -59,6 +63,7 @@ class BSMCCircle(Node):
         self.MAX_W = float(self.get_parameter('max_w').value)
         self.MIN_V = float(self.get_parameter('min_v').value)
         self.INVERT_EY = bool(self.get_parameter('invert_ey').value)
+        self.yaw_bias_gain = float(self.get_parameter('yaw_bias_gain').value)
         self.radius_feedback_gain = float(
             self.get_parameter('radius_feedback_gain').value
         )
@@ -117,7 +122,6 @@ class BSMCCircle(Node):
 
         # Yaw bias estimator: phát hiện robot quay thiếu/quay thừa
         self.yaw_bias_integral = 0.0       # Tích phân sai số hướng
-        self.yaw_bias_gain = 0.02          # Tốc độ học yaw bias
         self.yaw_feedforward = 0.0         # Giá trị bù w (rad/s)
 
         self.timer = self.create_timer(self.timer_period, self.control_loop)
@@ -251,34 +255,6 @@ class BSMCCircle(Node):
 
         return x_d, y_d, theta_d, v_d, w_d
 
-    def generate_desired_trajectory(self, t):
-        T_ramp = 2.5  # Tăng nhẹ ramp để giảm quán tính
-        if t < T_ramp:
-            # Smooth cubic ramp: gia tốc và gia tốc giật đều liên tục
-            s = self.VD * (t ** 2) / (2.0 * T_ramp)
-            v_d = self.VD * t / T_ramp
-            w_d = self.W * t / T_ramp
-        else:
-            s = self.VD * (t - T_ramp / 2.0)
-            v_d = self.VD
-            w_d = self.W
-
-        # Circle in local frame
-        ang = s / self.R
-        theta_local = ang
-        x_local = self.R * math.sin(ang)
-        y_local = self.R * (1.0 - math.cos(ang))
-
-        # Rotate trajectory by initial robot heading
-        cos0 = math.cos(self.theta0)
-        sin0 = math.sin(self.theta0)
-
-        x_d = self.x0 + cos0 * x_local - sin0 * y_local
-        y_d = self.y0 + sin0 * x_local + cos0 * y_local
-        theta_d = self.normalize_angle(self.theta0 + theta_local)
-
-        return x_d, y_d, theta_d, v_d, w_d
-
     def _compute_center(self):
         """Tính tâm vòng tròn từ anchor."""
         return (
@@ -293,7 +269,7 @@ class BSMCCircle(Node):
         return dist - self.R
 
     def _check_ekf_freshness(self, now_s):
-        """Kiểm tra EKF còn mới không, nếu trễ > 2 chu kỳ thì dùng feedforward."""
+        """Kiểm tra feedback còn mới; control loop sẽ dừng nếu quá trễ."""
         if self.last_odom_time is None:
             return True
         return (now_s - self.last_odom_time) <= (3.0 / 20.0)  # 150ms
@@ -422,10 +398,11 @@ class BSMCCircle(Node):
 
         # Fallback nếu EKF trễ
         if not self._check_ekf_freshness(now_s):
-            cmd_msg = Twist()
-            cmd_msg.linear.x = float(v_d)
-            cmd_msg.angular.z = float(w_d)
-            self.cmd_pub.publish(cmd_msg)
+            self.cmd_pub.publish(Twist())
+            self.get_logger().warn(
+                "Feedback stale during tracking; stopping robot.",
+                throttle_duration_sec=1.0,
+            )
             return
 
         # Publish desired trajectory for camera overlay
@@ -520,14 +497,8 @@ class BSMCCircle(Node):
                 * radius_error_ratio
             )
 
-        # === BOOST VẬN TỐC KHI KHỞI ĐỘNG ===
-        # Dùng boost dựa trên |e_x| thực tế: nếu e_x lớn, robot được phép chạy nhanh hơn
-        startup_boost = 1.0
-        if t_track < 5.0:
-            startup_boost = 1.0 + 0.5 * (1.0 - t_track / 5.0)
-
         # === CLAMP V ===
-        v_cmd = max(self.MIN_V, min(self.MAX_V * startup_boost, v_cmd))
+        v_cmd = max(self.MIN_V, min(self.MAX_V, v_cmd))
 
         # === CLAMP W (bảo vệ bánh) ===
         if self.VL_MIN > 0.0:

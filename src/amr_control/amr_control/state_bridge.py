@@ -33,13 +33,10 @@ class StateBridgeNode(Node):
       /odom_raw  (Odometry) → EKF
       /imu/data  (Imu)      → EKF
 
-    FIX ESP-NOW:
-      - dt clamp chặt hơn (max 0.12s thay vì 0.2s) để 1 gói drop không
-        gây odometry jump lớn.
-      - Nếu dt > PACKET_LOSS_THRESHOLD: coi như v=0, w=0 trong chu kỳ đó
-        (robot không dịch chuyển được nhiều trong thời gian mất gói ngắn)
-        → tránh odometry vọt xa so với thực tế.
-      - Low-pass filter nhẹ trên v và w để giảm chattering từ jitter packet.
+    Packet gaps are diagnosed separately from integration.  Replacing every
+    delayed interval by the nominal period systematically shortens travelled
+    distance, so normal one-packet gaps are integrated using measured time and
+    only very large intervals are clamped by ``max_integration_dt``.
     """
 
     WHEEL_DIAMETER = 0.063
@@ -51,6 +48,7 @@ class StateBridgeNode(Node):
     # Nếu dt > ngưỡng này → coi như mất gói, KHÔNG tích phân odometry
     # (0.12s = chịu được 1 gói drop, ≈2.4×DT nominal)
     PACKET_LOSS_THRESHOLD = 0.12
+    MAX_INTEGRATION_DT = 0.25
 
     ODOM_SCALE_FACTOR = 1.0
 
@@ -65,18 +63,30 @@ class StateBridgeNode(Node):
         self.declare_parameter('wheel_base', self.WHEEL_BASE)
         self.declare_parameter('wheel_calib_l', self.WHEEL_CALIB_L)
         self.declare_parameter('odom_scale_factor', self.ODOM_SCALE_FACTOR)
-        self.declare_parameter('gyro_z_sign', 1.0)
+        # Latest camera/gyro data show that positive physical CCW rotation is
+        # reported with negative encoder differential and negative gyro sign.
+        # Keep these explicit parameters so the convention is reproducible.
+        self.declare_parameter('encoder_w_sign', -1.0)
+        self.declare_parameter('encoder_w_scale', 1.0)
+        self.declare_parameter('gyro_z_sign', -1.0)
         self.declare_parameter('lpf_alpha', self.LPF_ALPHA)
         self.declare_parameter('packet_loss_threshold', self.PACKET_LOSS_THRESHOLD)
+        self.declare_parameter('max_integration_dt', self.MAX_INTEGRATION_DT)
 
         self.wheel_diameter = float(self.get_parameter('wheel_diameter').value)
         self.wheel_base = float(self.get_parameter('wheel_base').value)
         self.wheel_calib_l = float(self.get_parameter('wheel_calib_l').value)
         self.odom_scale_factor = float(self.get_parameter('odom_scale_factor').value)
+        self.encoder_w_sign = float(self.get_parameter('encoder_w_sign').value)
+        self.encoder_w_scale = float(self.get_parameter('encoder_w_scale').value)
         self.gyro_z_sign = float(self.get_parameter('gyro_z_sign').value)
         self.lpf_alpha = float(self.get_parameter('lpf_alpha').value)
         self.packet_loss_threshold = float(
             self.get_parameter('packet_loss_threshold').value
+        )
+        self.max_integration_dt = max(
+            self.packet_loss_threshold,
+            float(self.get_parameter('max_integration_dt').value),
         )
 
         self.state_sub = self.create_subscription(
@@ -105,13 +115,17 @@ class StateBridgeNode(Node):
 
         self.get_logger().info(
             "StateBridge (ESP-NOW hardened): "
-            "wheel_diameter=%.3fm  wheel_base=%.3fm  gyro_z_sign=%.1f  "
-            "packet_loss_threshold=%.3fs  lpf_alpha=%.2f" %
+            "wheel_diameter=%.3fm  wheel_base=%.3fm  "
+            "encoder_w_sign=%.1f encoder_w_scale=%.3f gyro_z_sign=%.1f  "
+            "packet_loss_threshold=%.3fs max_integration_dt=%.3fs lpf_alpha=%.2f" %
             (
                 self.wheel_diameter,
                 self.wheel_base,
+                self.encoder_w_sign,
+                self.encoder_w_scale,
                 self.gyro_z_sign,
                 self.packet_loss_threshold,
+                self.max_integration_dt,
                 self.lpf_alpha,
             )
         )
@@ -152,12 +166,7 @@ class StateBridgeNode(Node):
                 f"drop rate {drop_rate:.1f}% ({self._pkt_drop}/{self._pkt_total})",
                 throttle_duration_sec=5.0
             )
-            # Clamp dt về nominal: tránh odometry jump
-            # (Chấp nhận tích phân nhỏ hơn thực tế trong 1 chu kỳ mất gói)
-            dt = self.DT
-        else:
-            # Clamp dt bình thường trong khoảng hợp lệ
-            dt = max(0.02, min(dt, self.packet_loss_threshold))
+        dt = max(0.0, min(dt, self.max_integration_dt))
 
         # ── Giải mã ─────────────────────────────────────────────────────
         rpm_L_raw = float(msg.data[0]) / 10.0
@@ -175,6 +184,8 @@ class StateBridgeNode(Node):
         w_enc_raw = (v_R - v_L) / self.wheel_base
 
         # ── Low-pass filter (giảm chattering từ jitter ESP-NOW) ─────────
+        v_raw *= self.odom_scale_factor
+        w_enc_raw *= self.encoder_w_sign * self.encoder_w_scale
         v     = self.lpf_alpha * v_raw     + (1.0 - self.lpf_alpha) * self._v_filt
         w_enc = self.lpf_alpha * w_enc_raw + (1.0 - self.lpf_alpha) * self._w_filt
         self._v_filt = v
@@ -189,8 +200,8 @@ class StateBridgeNode(Node):
         self.theta  = math.atan2(math.sin(self.theta), math.cos(self.theta))
 
         theta_mid = (theta_old + self.theta) / 2.0
-        self.x += v * math.cos(theta_mid) * dt * self.odom_scale_factor
-        self.y += v * math.sin(theta_mid) * dt * self.odom_scale_factor
+        self.x += v * math.cos(theta_mid) * dt
+        self.y += v * math.sin(theta_mid) * dt
 
         # ── Publish ──────────────────────────────────────────────────────
         stamp = self.get_clock().now().to_msg()

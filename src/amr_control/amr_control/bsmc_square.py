@@ -434,10 +434,11 @@ class BSMCSquare(Node):
         x_d, y_d, theta_d, v_d, w_d = self.generate_desired_trajectory(t_track)
 
         if not self._check_ekf_freshness(now_s):
-            cmd_msg = Twist()
-            cmd_msg.linear.x = float(v_d)
-            cmd_msg.angular.z = float(w_d)
-            self.cmd_pub.publish(cmd_msg)
+            self.cmd_pub.publish(Twist())
+            self.get_logger().warn(
+                "Feedback stale during tracking; stopping robot.",
+                throttle_duration_sec=1.0,
+            )
             return
 
         desired_msg = Point()
@@ -492,12 +493,7 @@ class BSMCSquare(Node):
             + self.yaw_feedforward
         )
 
-        # Startup boost
-        startup_boost = 1.0
-        if t_track < 5.0:
-            startup_boost = 1.0 + 0.5 * (1.0 - t_track / 5.0)
-
-        v_cmd = max(self.MIN_V, min(self.MAX_V * startup_boost, v_cmd))
+        v_cmd = max(self.MIN_V, min(self.MAX_V, v_cmd))
 
         if self.VL_MIN > 0.0:
             w_max_safe = (v_cmd - self.VL_MIN) / (self.L / 2.0)

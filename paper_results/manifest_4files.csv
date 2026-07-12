@@ -1,0 +1,5 @@
+file,controller,trajectory,run_id,source
+../paper_logs/20260711_172534_circle_BSMC_fusion_run3.csv,BSMC,circle,fusion_run3,odom
+../paper_logs/20260711_173100_circle_Backstepping_fusion_run4.csv,Backstepping,circle,fusion_run4,odom
+../paper_logs/20260711_175733_circle_Backstepping__run6.csv,Backstepping,circle,raw_run6,odom
+../paper_logs/20260711_180238_circle_BSMC_raw_run7.csv,BSMC,circle,raw_run7,odom

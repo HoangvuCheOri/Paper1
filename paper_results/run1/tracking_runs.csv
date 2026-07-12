@@ -1,0 +1,2 @@
+file,controller,trajectory,run_id,source,start_time_s,end_time_s,n_samples,duration_s,rmse_ex_m,rmse_ey_m,rmse_etheta_rad,rmse_position_m,mae_position_m,max_position_m,mae_heading_rad,max_heading_rad,convergence_time_s,mean_abs_cmd_v,mean_abs_cmd_w
+paper_logs/20260711_131606_circle_BSMC_fusion_run1.csv,unknown,unknown,fusion_run1,odom,0.0,,2252,90.04055643081665,0.04914470606686797,0.06351626309723687,0.41813732503046164,0.08124347678491545,0.0664145342375339,0.24348309981074714,0.16756425492063629,1.7095042504217572,3.5599517822265625,0.08260077023470737,0.1335288210234808
