@@ -10,6 +10,7 @@ import rclpy
 from geometry_msgs.msg import Point, Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
+from rclpy.executors import ExternalShutdownException
 from std_msgs.msg import Float32MultiArray
 
 
@@ -298,11 +299,13 @@ def main(args=None):
     node = PaperDataLogger()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        try:
+            node.destroy_node()
+        finally:
+            rclpy.try_shutdown()
 
 
 if __name__ == "__main__":

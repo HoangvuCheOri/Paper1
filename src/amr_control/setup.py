@@ -41,6 +41,8 @@ setup(
             'debug_yaw = amr_control.debug_yaw:main',
             'homography_calibration = amr_control.homography_calibration:main',
             'optuna_bsmc_tuning = amr_control.optuna_bsmc_tuning:main',
+            'spin_test = amr_control.spin_test:main',
+            'square_tuning_report = amr_control.square_tuning_report:main',
         ],
     },
 )

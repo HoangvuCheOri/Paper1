@@ -35,23 +35,18 @@ class BSMCEight(Node):
         self.desired_mode_pub = self.create_publisher(String, '/desired_trajectory_mode', 10)
 
         self.declare_parameter('odom_topic', '/odometry/filtered')
-        self.declare_parameter('amplitude', 0.5)       # A: bán kính mỗi nửa vòng (m)
+        self.declare_parameter('amplitude', 1.1)       # A: bán kính mỗi nửa vòng (m)
         self.declare_parameter('angular_speed', 0.20)   # ω: tốc độ góc (rad/s)
         self.declare_parameter('control_frequency', 25.0)
-        self.declare_parameter('startup_delay', 0.5)
-        self.declare_parameter('settle_time', 1.0)
-        self.declare_parameter('ramp_time', 2.0)
-        self.declare_parameter('feedback_timeout', 0.25)
-        self.declare_parameter('periods', 0.0)
-        self.declare_parameter('k1', 1.0)
-        self.declare_parameter('k2', 3.0)
-        self.declare_parameter('k3', 3.5)
-        self.declare_parameter('ks1', 0.08)
-        self.declare_parameter('ks2', 0.10)
-        self.declare_parameter('phi1', 0.4)
-        self.declare_parameter('phi2', 1.0)
-        self.declare_parameter('sliding_c', 1.0)
-        self.declare_parameter('yaw_bias_gain', 0.0)
+        self.declare_parameter('startup_delay', 1.0)
+        self.declare_parameter('settle_time', 2.0)
+        self.declare_parameter('k1', 0.40)
+        self.declare_parameter('k2', 2.8)
+        self.declare_parameter('k3', 4.2)
+        self.declare_parameter('ks1', 0.04)
+        self.declare_parameter('ks2', 0.20)
+        self.declare_parameter('phi1', 1.0)
+        self.declare_parameter('phi2', 0.60)
         self.declare_parameter('max_v', 0.18)
         self.declare_parameter('max_w', 0.85)
         self.declare_parameter('min_v', 0.0)
@@ -65,22 +60,14 @@ class BSMCEight(Node):
         self.timer_period = 1.0 / control_frequency
         self.STARTUP_DELAY = float(self.get_parameter('startup_delay').value)
         self.SETTLE_TIME = float(self.get_parameter('settle_time').value)
-        self.RAMP_TIME = max(0.1, float(self.get_parameter('ramp_time').value))
-        self.FEEDBACK_TIMEOUT = max(
-            2.0 * self.timer_period,
-            float(self.get_parameter('feedback_timeout').value),
-        )
-        self.PERIODS = max(0.0, float(self.get_parameter('periods').value))
 
         self.k1 = float(self.get_parameter('k1').value)
         self.k2 = float(self.get_parameter('k2').value)
         self.k3 = float(self.get_parameter('k3').value)
         self.Ks1 = float(self.get_parameter('ks1').value)
         self.Ks2 = float(self.get_parameter('ks2').value)
-        self.phi1 = max(1e-6, float(self.get_parameter('phi1').value))
-        self.phi2 = max(1e-6, float(self.get_parameter('phi2').value))
-        self.c = float(self.get_parameter('sliding_c').value)
-        self.yaw_bias_gain = float(self.get_parameter('yaw_bias_gain').value)
+        self.phi1 = float(self.get_parameter('phi1').value)
+        self.phi2 = float(self.get_parameter('phi2').value)
         self.MAX_V = float(self.get_parameter('max_v').value)
         self.MAX_W = float(self.get_parameter('max_w').value)
         self.MIN_V = float(self.get_parameter('min_v').value)
@@ -140,6 +127,7 @@ class BSMCEight(Node):
 
         # Yaw bias estimator: phát hiện robot quay thiếu/quay thừa
         self.yaw_bias_integral = 0.0
+        self.yaw_bias_gain = 0.02
         self.yaw_feedforward = 0.0
 
         self.timer = self.create_timer(self.timer_period, self.control_loop)
@@ -153,6 +141,9 @@ class BSMCEight(Node):
         self.kb_thread = threading.Thread(target=self.keyboard_loop, daemon=True)
         self.kb_thread.start()
 
+        # Coupling lateral error to heading sliding surface
+        self.c = 1.0
+
         # Bảo vệ không cho bánh đảo chiều
         self.L = 0.17          # wheelbase (m)
         self.VL_MIN = 0.0
@@ -164,8 +155,8 @@ class BSMCEight(Node):
 
         self.debug_counter = 0
 
-        # Wall-clock time for one full path after including the smooth ramp.
-        self.T_period = self.RAMP_TIME / 2.0 + 2.0 * math.pi / self.W
+        # Chu kỳ hình số 8: T = 2*pi / W
+        self.T_period = 2.0 * math.pi / self.W
 
         self.get_logger().info(
             f"EKF BSMC Figure-8 started: odom_topic={self.odom_topic}, "
@@ -270,66 +261,55 @@ class BSMCEight(Node):
         A = self.A
         W = self.W
 
-        # Time scaling must be integrated before it is applied to position.
-        # The old implementation used W*t for position but multiplied only
-        # velocity by the ramp, so the advertised pose and twist could not be
-        # derivatives of one another and heading jumped by 45 degrees.
-        if t < self.RAMP_TIME:
-            ramp = max(0.0, t / self.RAMP_TIME)
-            phase = W * t * t / (2.0 * self.RAMP_TIME)
+        # Ramp-up: tăng dần tốc độ trong T_ramp giây đầu
+        T_ramp = 2.5
+        if t < T_ramp:
+            ramp = t / T_ramp
         else:
             ramp = 1.0
-            phase = W * (t - self.RAMP_TIME / 2.0)
-        phase_rate = W * ramp
+
+        wt = W * t
 
         # Vị trí trong local frame
-        x_local = A * math.sin(phase)
-        y_local = (A / 2.0) * math.sin(2.0 * phase)
+        x_local = A * math.sin(wt)
+        y_local = (A / 2.0) * math.sin(2.0 * wt)
 
         # Đạo hàm bậc 1 (vận tốc)
-        dx_du = A * math.cos(phase)
-        dy_du = A * math.cos(2.0 * phase)
-        d2x_du2 = -A * math.sin(phase)
-        d2y_du2 = -2.0 * A * math.sin(2.0 * phase)
-        dx_dt = dx_du * phase_rate
-        dy_dt = dy_du * phase_rate
+        dx_dt = A * W * math.cos(wt) * ramp
+        dy_dt = A * W * math.cos(2.0 * wt) * ramp
+
+        # Đạo hàm bậc 2 (gia tốc) — cần cho tính w_d
+        d2x_dt2 = -A * W * W * math.sin(wt) * ramp
+        d2y_dt2 = -2.0 * A * W * W * math.sin(2.0 * wt) * ramp
 
         # Vận tốc tuyến tính
         v_d = math.sqrt(dx_dt**2 + dy_dt**2)
 
         # Heading desired
-        if abs(dx_du) + abs(dy_du) > 1e-12:
-            theta_local = math.atan2(dy_du, dx_du)
-        else:
-            theta_local = 0.0
+        theta_local = math.atan2(dy_dt, dx_dt)
 
         # Vận tốc góc (từ curvature): w = (dx*d2y - dy*d2x) / v^2
-        tangent_sq = dx_du**2 + dy_du**2
-        if tangent_sq > 1e-12:
-            dtheta_du = (
-                dx_du * d2y_du2 - dy_du * d2x_du2
-            ) / tangent_sq
-            w_d = dtheta_du * phase_rate
+        v_sq = v_d**2
+        if v_sq > 1e-12:
+            w_d = (dx_dt * d2y_dt2 - dy_dt * d2x_dt2) / v_sq
         else:
             w_d = 0.0
 
-        # The figure-eight tangent at phase=0 is +45 degrees.  Rotate by
-        # theta0-45deg so the desired heading starts at the measured heading.
-        path_rotation = self.theta0 - math.pi / 4.0
-        cos0 = math.cos(path_rotation)
-        sin0 = math.sin(path_rotation)
+        # Xoay quỹ đạo theo hướng ban đầu của robot
+        cos0 = math.cos(self.theta0)
+        sin0 = math.sin(self.theta0)
 
         x_d = self.x0 + cos0 * x_local - sin0 * y_local
         y_d = self.y0 + sin0 * x_local + cos0 * y_local
-        theta_d = self.normalize_angle(path_rotation + theta_local)
+        theta_d = self.normalize_angle(self.theta0 + theta_local)
 
         return x_d, y_d, theta_d, v_d, w_d
 
-    def _feedback_is_fresh(self, now_s):
-        """Return False when closed-loop feedback is too old to be safe."""
+    def _check_ekf_freshness(self, now_s):
+        """Kiểm tra EKF còn mới không, nếu trễ > 2 chu kỳ thì dùng feedforward."""
         if self.last_odom_time is None:
-            return False
-        return (now_s - self.last_odom_time) <= self.FEEDBACK_TIMEOUT
+            return True
+        return (now_s - self.last_odom_time) <= (3.0 / 20.0)  # 150ms
 
     def _settle_ekf(self, now_s):
         """Giai đoạn làm ổn định EKF: thu thập mẫu để lấy anchor chính xác."""
@@ -452,21 +432,13 @@ class BSMCEight(Node):
 
         x_d, y_d, theta_d, v_d, w_d = self.generate_desired_trajectory(t_track)
 
-        if not self._feedback_is_fresh(now_s):
-            self.cmd_pub.publish(Twist())
-            self.get_logger().warn(
-                "Feedback stale during tracking; stopping robot.",
-                throttle_duration_sec=1.0,
-            )
+        # Fallback nếu EKF trễ
+        if not self._check_ekf_freshness(now_s):
+            cmd_msg = Twist()
+            cmd_msg.linear.x = float(v_d)
+            cmd_msg.angular.z = float(w_d)
+            self.cmd_pub.publish(cmd_msg)
             return
-
-        if self.PERIODS > 0.0:
-            completed_phase = abs(self.W) * max(
-                0.0, t_track - self.RAMP_TIME / 2.0
-            )
-            if completed_phase >= self.PERIODS * 2.0 * math.pi:
-                self.cmd_pub.publish(Twist())
-                return
 
         # Publish desired trajectory for camera overlay
         desired_msg = Point()
@@ -526,8 +498,13 @@ class BSMCEight(Node):
             + self.yaw_feedforward
         )
 
+        # === BOOST VẬN TỐC KHI KHỞI ĐỘNG ===
+        startup_boost = 1.0
+        if t_track < 5.0:
+            startup_boost = 1.0 + 0.5 * (1.0 - t_track / 5.0)
+
         # === CLAMP V ===
-        v_cmd = max(self.MIN_V, min(self.MAX_V, v_cmd))
+        v_cmd = max(self.MIN_V, min(self.MAX_V * startup_boost, v_cmd))
 
         # === CLAMP W (bảo vệ bánh) ===
         if self.VL_MIN > 0.0:

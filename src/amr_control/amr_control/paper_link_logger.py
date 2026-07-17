@@ -20,6 +20,7 @@ class PaperLinkLogger(Node):
         self.declare_parameter("output_file", "")
         self.declare_parameter("condition", "unknown")
         self.declare_parameter("distance_m", float("nan"))
+        self.declare_parameter("duration", 0.0)
         self.declare_parameter("link_topic", "/espnow_link")
 
         output_dir = os.path.expanduser(str(self.get_parameter("output_dir").value))
@@ -33,6 +34,7 @@ class PaperLinkLogger(Node):
 
         self.condition = str(self.get_parameter("condition").value)
         self.distance_m = float(self.get_parameter("distance_m").value)
+        self.duration = float(self.get_parameter("duration").value)
         self.start_time = None
         self.rows = 0
 
@@ -62,7 +64,7 @@ class PaperLinkLogger(Node):
 
         self.get_logger().info(
             f"Paper link logger started: condition={self.condition}, "
-            f"distance_m={self.distance_m}, file={self.file_path}"
+            f"distance_m={self.distance_m}, duration={self.duration}s, file={self.file_path}"
         )
 
     def _now_sec(self):
@@ -93,6 +95,10 @@ class PaperLinkLogger(Node):
         self.rows += 1
         if self.rows % 10 == 0:
             self.csv_file.flush()
+
+        if self.duration > 0.0 and (now - self.start_time) >= self.duration:
+            self.get_logger().info(f"Đã đạt giới hạn {self.duration}s. Tự động tắt logger.")
+            raise SystemExit
 
     def destroy_node(self):
         try:

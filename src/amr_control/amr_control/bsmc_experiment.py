@@ -17,6 +17,11 @@ import rclpy
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 
+from amr_control.square_profiles import (
+    get_square_profile,
+    profile_name_for_side,
+)
+
 
 def yaw_from_quaternion(q):
     return math.atan2(
@@ -122,7 +127,7 @@ def collect_sensor_check(duration):
     finally:
         samples = node.samples
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
     return sensor_summary(samples, time.monotonic() - started)
 
 
@@ -166,13 +171,22 @@ def preflight_ok(summary):
 
 DEFAULT_GAINS = {
     "circle": {"k1": 0.40, "k2": 2.4, "k3": 3.5, "ks1": 0.20, "ks2": 0.40, "phi1": 1.0, "phi2": 1.5},
-    "eight": {"k1": 1.00, "k2": 3.0, "k3": 3.5, "ks1": 0.08, "ks2": 0.10, "phi1": 0.4, "phi2": 1.0},
-    # bsmc_square defaults to Backstepping; these conservative SMC gains
-    # provide the BSMC arm of the controlled comparison.
-    "square": {"k1": 0.80, "k2": 6.0, "k3": 6.0, "ks1": 0.08, "ks2": 0.10, "phi1": 0.5, "phi2": 0.8},
+    "eight": {"k1": 0.2205844943, "k2": 3.9097295565, "k3": 5.2459918836, "ks1": 0.0368328900, "ks2": 0.1159106176, "phi1": 1.0, "phi2": 1.5},
+    # k2/k3 are replaced by the selected validated square profile.
+    "square": {"k1": 0.80, "k2": 6.0, "k3": 7.0, "ks1": 0.08, "ks2": 0.10, "phi1": 1.0, "phi2": 1.5},
 }
 
-DEFAULT_DURATION = {"circle": 63.0, "eight": 45.0, "square": 44.0}
+DEFAULT_DURATION = {"circle": 63.0, "eight": 90.0, "square": 45.0}
+
+
+def square_run_duration(side_length, desired_speed, laps=1.0):
+    """Controller wall time for complete square laps, including startup/ramp."""
+    side = max(0.01, float(side_length))
+    speed = max(0.01, float(desired_speed))
+    distance = max(0.25, float(laps)) * 4.0 * side
+    # Controller: 1 s startup + 2 s EKF settling + 1.25 s ramp distance
+    # compensation. The final second ensures the last logged edge is complete.
+    return 1.0 + 2.0 + distance / speed + 1.25 + 1.0
 
 
 def append_manifest(path, row):
@@ -236,6 +250,44 @@ def terminate_process(process, timeout=2.0):
         signal.signal(signal.SIGINT, old_handler)
 
 
+SQUARE_PROFILE_ARGUMENTS = {
+    "side_length": "side_length",
+    "corner_speed": "corner_speed",
+    "corner_decel_distance": "corner_decel_distance",
+    "desired_speed": "desired_speed",
+    "min_v": "min_v",
+    "max_w": "max_w",
+    "sharp_corner_w": "sharp_corner_w",
+    "sharp_corner_blend_start_deg": "sharp_corner_blend_start_deg",
+    "sharp_corner_blend_full_deg": "sharp_corner_blend_full_deg",
+    "k2_straight": "k2",
+    "k3_straight": "k3",
+    "kd_w_straight": "kd_w",
+    "kd_w_deadband": "kd_w_deadband",
+}
+
+
+def resolve_square_profile(args):
+    """Fill unset square arguments from one validated hardware profile."""
+    if args.trajectory != "square":
+        return
+    name = args.square_profile
+    if name == "auto":
+        try:
+            name = (
+                "2m"
+                if args.side_length is None
+                else profile_name_for_side(args.side_length)
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+    profile = get_square_profile(name)
+    for argument, key in SQUARE_PROFILE_ARGUMENTS.items():
+        if getattr(args, argument) is None:
+            setattr(args, argument, profile[key])
+    args.square_profile = name
+
+
 def validate_run_args(args):
     if args.duration < 0.0:
         raise SystemExit("--duration must be >= 0")
@@ -251,13 +303,34 @@ def validate_run_args(args):
     elif args.trajectory == "square":
         if args.side_length <= 0.0:
             raise SystemExit("--side-length must be positive")
-        if not 0.01 <= args.corner_radius <= args.side_length / 2.0:
-            raise SystemExit("--corner-radius must be between 0.01 and side_length/2")
+        if args.corner_speed <= 0.0:
+            raise SystemExit("--corner-speed must be positive")
+        if args.corner_decel_distance <= 0.0:
+            raise SystemExit("--corner-decel-distance must be positive")
+        if args.min_v < 0.0:
+            raise SystemExit("--min-v must be >= 0")
+        if args.sharp_corner_w < 0.0:
+            raise SystemExit("--sharp-corner-w must be >= 0")
+        if args.sharp_corner_blend_start_deg < 0.0:
+            raise SystemExit("--sharp-corner-blend-start-deg must be >= 0")
+        if args.sharp_corner_blend_full_deg <= args.sharp_corner_blend_start_deg:
+            raise SystemExit(
+                "--sharp-corner-blend-full-deg must exceed blend-start-deg"
+            )
+        if args.kd_w_straight < 0.0:
+            raise SystemExit("--kd-w-straight must be >= 0")
+        if args.kd_w_deadband < 0.0:
+            raise SystemExit("--kd-w-deadband must be >= 0")
+        if args.k2_straight < 0.0 or args.k3_straight < 0.0:
+            raise SystemExit("--k2-straight and --k3-straight must be >= 0")
     defaults = DEFAULT_GAINS[args.trajectory]
     gains = {
         key: defaults[key] if getattr(args, key) is None else getattr(args, key)
         for key in defaults
     }
+    if args.trajectory == "square":
+        gains["k2"] = args.k2_straight
+        gains["k3"] = args.k3_straight
     for key in ("k1", "k2", "k3", "ks1", "ks2"):
         if gains[key] < 0.0:
             raise SystemExit(f"--{key} must be >= 0")
@@ -270,6 +343,7 @@ def validate_run_args(args):
 
 
 def run_experiment(args):
+    resolve_square_profile(args)
     validate_run_args(args)
     # Preflight with retry — robot may still be decelerating from previous run
     max_attempts = 3
@@ -339,7 +413,17 @@ def run_experiment(args):
     if args.controller == "backstepping":
         gains["ks1"] = 0.0
         gains["ks2"] = 0.0
-    duration = args.duration if args.duration > 0.0 else DEFAULT_DURATION[args.trajectory]
+    if args.duration > 0.0:
+        duration = args.duration
+    elif args.trajectory == "square":
+        duration = square_run_duration(
+            args.side_length,
+            getattr(args, "desired_speed", 0.10),
+            getattr(args, "square_laps", 1.0),
+        )
+        duration += 15.0
+    else:
+        duration = DEFAULT_DURATION[args.trajectory]
     odom_topic = "/odometry/filtered" if args.source == "fusion" else "/odom_raw"
     run_id = args.run_id or f"{args.trajectory}_{args.controller}_{args.source}_{stamp}"
     controller_name = "BSMC" if args.controller == "bsmc" else "Backstepping"
@@ -357,25 +441,46 @@ def run_experiment(args):
     controller_cmd = [
         "ros2", "run", "amr_control", executable, "--ros-args",
         "-p", f"odom_topic:={odom_topic}",
-        "-p", f"k1:={gains['k1']}", "-p", f"k2:={gains['k2']}",
-        "-p", f"k3:={gains['k3']}", "-p", f"ks1:={gains['ks1']}",
+        "-p", f"k1:={gains['k1']}", "-p", f"ks1:={gains['ks1']}",
         "-p", f"ks2:={gains['ks2']}", "-p", f"phi1:={gains['phi1']}",
         "-p", f"phi2:={gains['phi2']}",
     ]
     if args.trajectory == "circle":
         controller_cmd.extend([
+            "-p", f"k2:={gains['k2']}", "-p", f"k3:={gains['k3']}",
             "-p", f"radius:={args.radius}",
             "-p", f"yaw_bias_gain:={args.yaw_bias_gain}",
             "-p", f"radius_feedback_gain:={args.radius_feedback_gain}",
             "-p", f"radius_position_gain:={args.radius_position_gain}",
         ])
     elif args.trajectory == "eight":
-        controller_cmd.extend(["-p", f"amplitude:={args.amplitude}", "-p", "periods:=1.0"])
-    else:
         controller_cmd.extend([
+            "-p", f"k2:={gains['k2']}", "-p", f"k3:={gains['k3']}",
+            "-p", f"amplitude:={args.amplitude}",
+            "-p", f"angular_speed:={getattr(args, 'angular_speed', 0.20)}",
+            "-p", f"yaw_bias_gain:={args.yaw_bias_gain}",
+            "-p", "periods:=1.0",
+        ])
+    else:
+        desired_speed = getattr(args, "desired_speed", 0.10)
+        corner_speed = getattr(args, "corner_speed", 0.04)
+        max_w = getattr(args, "max_w", 0.85)
+        controller_cmd.extend([
+            "-p", f"square_profile:={args.square_profile}",
             "-p", f"side_length:={args.side_length}",
-            "-p", f"corner_radius:={args.corner_radius}",
-            "-p", "max_w:=0.85",
+            "-p", f"corner_speed:={corner_speed}",
+            "-p", f"corner_decel_distance:={getattr(args, 'corner_decel_distance', 0.13)}",
+            "-p", f"desired_speed:={desired_speed}",
+            "-p", f"max_w:={max_w}",
+            "-p", f"min_v:={getattr(args, 'min_v', 0.02)}",
+            "-p", f"sharp_corner_w:={getattr(args, 'sharp_corner_w', 0.55)}",
+            "-p", f"sharp_corner_blend_start_deg:={getattr(args, 'sharp_corner_blend_start_deg', 12.0)}",
+            "-p", f"sharp_corner_blend_full_deg:={getattr(args, 'sharp_corner_blend_full_deg', 35.0)}",
+            "-p", f"max_progress_rate:={getattr(args, 'max_progress_rate', 0.30)}",
+            "-p", f"k2_straight:={getattr(args, 'k2_straight', 4.0)}",
+            "-p", f"k3_straight:={getattr(args, 'k3_straight', 7.0)}",
+            "-p", f"kd_w_straight:={getattr(args, 'kd_w_straight', 0.18)}",
+            "-p", f"kd_w_deadband:={getattr(args, 'kd_w_deadband', 0.06)}",
         ])
 
     logger = controller = None
@@ -436,11 +541,42 @@ def run_experiment(args):
             "yaw_bias_gain": args.yaw_bias_gain,
             "radius_feedback_gain": args.radius_feedback_gain,
             "radius_position_gain": args.radius_position_gain,
+            "side_length": getattr(args, "side_length", ""),
+            "square_profile": getattr(args, "square_profile", ""),
+            "corner_speed": getattr(args, "corner_speed", ""),
+            "corner_decel_distance": getattr(args, "corner_decel_distance", ""),
+            "desired_speed": getattr(args, "desired_speed", ""),
+            "max_w": getattr(args, "max_w", ""),
+            "min_v": getattr(args, "min_v", ""),
+            "square_laps": getattr(args, "square_laps", ""),
+            "sharp_corner_w": getattr(args, "sharp_corner_w", ""),
+            "sharp_corner_blend_start_deg": getattr(args, "sharp_corner_blend_start_deg", ""),
+            "sharp_corner_blend_full_deg": getattr(args, "sharp_corner_blend_full_deg", ""),
+            "max_progress_rate": getattr(args, "max_progress_rate", ""),
+            "k2_straight": getattr(args, "k2_straight", ""),
+            "k3_straight": getattr(args, "k3_straight", ""),
+            "kd_w_straight": getattr(args, "kd_w_straight", ""),
+            "kd_w_deadband": getattr(args, "kd_w_deadband", ""),
         },
     )
     print(f"Saved run and gains to {output_dir / 'gain_manifest.csv'}")
     if failure is not None:
         raise failure
+    if status == "complete" and args.trajectory == "square":
+        try:
+            from amr_control.square_tuning_report import analyze
+            max_edges = max(1, int(round(4.0 * args.square_laps)))
+            summary, _, _, plot_path = analyze(
+                csv_path, output_dir / "square_reports", max_edges=max_edges
+            )
+            print(
+                "Square edge report: "
+                f"waviness RMS={100*summary['straight_waviness_rms_m']:.2f} cm, "
+                f"heading RMS={summary['straight_heading_rmse_deg']:.1f} deg, "
+                f"plot={plot_path}"
+            )
+        except Exception as exc:
+            print(f"WARNING: could not create square tuning report: {exc}")
     return {
         "file": csv_path, "status": status, "gains": gains,
         "run_id": run_id, "start_pose": start_pose,
@@ -463,6 +599,7 @@ def rank_one(path, warmup, min_cmd_v, source="fusion"):
     rows = read_rows(path)
     active = []
     alignment_reference = None
+    last_valid = None
     for row in rows:
         values = [number(row, key) for key in (
             "t", "error_ex", "error_ey", "error_etheta", "cmd_v", "cmd_w",
@@ -472,6 +609,7 @@ def rank_one(path, warmup, min_cmd_v, source="fusion"):
         if all(finite(value) for value in values):
             if alignment_reference is None:
                 alignment_reference = values
+            last_valid = values
             if values[0] >= warmup and values[4] > min_cmd_v:
                 active.append(values)
     if len(active) < 20:
@@ -514,18 +652,28 @@ def rank_one(path, warmup, min_cmd_v, source="fusion"):
     camera_rmse_ep = rmse(camera_ep)
     camera_rmse_heading = rmse(camera_heading_error)
     active_t = [row[0] - active[0][0] for row in active]
+    # Settling time must describe sustained tracking, not the naturally tiny
+    # error while the robot is just leaving the start point. Find the earliest
+    # time after which the complete remaining trajectory has both acceptable
+    # RMS and peak error.
     convergence = math.nan
-    hold_time = 2.0
-    threshold = 0.05
     for index, start in enumerate(active_t):
-        end = index
-        while end < len(active_t) and active_t[end] <= start + hold_time:
-            end += 1
-        if end > index and active_t[end - 1] >= start + 0.9 * hold_time:
-            if all(value <= threshold for value in camera_ep[index:end]):
-                convergence = start
-                break
+        if start < 2.0 or active_t[-1] - start < 5.0:
+            continue
+        remaining = camera_ep[index:]
+        if rmse(remaining) <= 0.06 and max(remaining) <= 0.10:
+            convergence = start
+            break
     convergence_penalty = convergence if finite(convergence) else active_t[-1]
+    saturation_count = sum(
+        1 for v_cmd, w_cmd in zip(cmd_v, cmd_w)
+        if abs(v_cmd) >= 0.99 * 0.18 or abs(w_cmd) >= 0.99 * 0.85
+    )
+    saturation_fraction = saturation_count / len(active)
+    trajectory_closure_error = math.hypot(
+        last_valid[8] - alignment_reference[8],
+        last_valid[9] - alignment_reference[9],
+    )
     score = (
         camera_rmse_ep
         + 0.20 * camera_rmse_heading
@@ -544,7 +692,10 @@ def rank_one(path, warmup, min_cmd_v, source="fusion"):
         "camera_aligned_max_position_m": max(camera_ep),
         "camera_aligned_rmse_heading_rad": camera_rmse_heading,
         "convergence_time_s": convergence,
+        "convergence_penalty_s": convergence_penalty,
         "cmd_v_delta_std": jerk_v, "cmd_w_delta_std": jerk_w,
+        "command_saturation_fraction": saturation_fraction,
+        "trajectory_closure_error_m": trajectory_closure_error,
         "score": score,
     }
 
@@ -637,7 +788,6 @@ def optimize_circle(args):
                 output_dir=str(output_dir),
                 run_id=f"opt_c{candidate_index + 1:02d}_r{repeat + 1}",
                 force=False, no_reset=False, radius=1.0, amplitude=0.5,
-                side_length=1.0, corner_radius=0.12,
                 yaw_bias_gain=0.0, radius_feedback_gain=0.0,
                 radius_position_gain=0.0, start_reference=start_reference,
                 start_position_tolerance=args.start_position_tolerance,
@@ -668,11 +818,10 @@ def optimize_circle(args):
             duration=args.duration, check_duration=args.check_duration,
             output_dir=str(output_dir), run_id=f"best_validation_r{repeat + 1}",
             force=False, no_reset=False, radius=1.0, amplitude=0.5,
-            side_length=1.0, corner_radius=0.12,
             yaw_bias_gain=0.0, radius_feedback_gain=0.0,
             radius_position_gain=0.0, start_reference=start_reference,
             start_position_tolerance=args.start_position_tolerance,
-            start_yaw_tolerance_deg=args.start_yaw_tolerance_deg, **best_gains,
+            start_yaw_tolerance_deg=args.start_yaw_tolerance_deg, **best_gains
         )
         result = run_experiment(run_args)
         start_reference = result["start_pose"]
@@ -733,7 +882,7 @@ def build_parser():
     run.add_argument("--trajectory", choices=["circle", "eight", "square"], required=True)
     run.add_argument("--controller", choices=["bsmc", "backstepping"], required=True)
     run.add_argument("--source", choices=["fusion", "raw"], required=True)
-    run.add_argument("--duration", type=float, default=0.0, help="0 uses one-trajectory default")
+    run.add_argument("--duration", type=float, default=0.0, help="0 uses an automatic trajectory duration")
     run.add_argument("--check-duration", type=float, default=5.0)
     run.add_argument("--output-dir", default="paper_logs/gain_tuning")
     run.add_argument("--run-id", default="")
@@ -742,17 +891,43 @@ def build_parser():
     run.add_argument("--k1", type=float, default=None)
     run.add_argument("--k2", type=float, default=None)
     run.add_argument("--k3", type=float, default=None)
+    run.add_argument("--k2-straight", type=float, default=None,
+                     help="cross-track recovery used on square straight edges")
+    run.add_argument("--k3-straight", type=float, default=None,
+                     help="heading damping on square edges; limited to avoid post-corner ringing")
+    run.add_argument("--kd-w-straight", type=float, default=None,
+                     help="measured yaw-rate damping during straight/corner release")
+    run.add_argument("--kd-w-deadband", type=float, default=None,
+                     help="yaw rate left undamped so normal line correction remains responsive")
     run.add_argument("--ks1", type=float, default=None)
     run.add_argument("--ks2", type=float, default=None)
     run.add_argument("--phi1", type=float, default=None)
     run.add_argument("--phi2", type=float, default=None)
     run.add_argument("--radius", type=float, default=1.0)
     run.add_argument("--amplitude", type=float, default=0.5, help="figure-8 half-width; total width is 2A")
-    run.add_argument("--side-length", type=float, default=1.0)
+    run.add_argument("--angular-speed", type=float, default=0.20, help="figure-8 phase rate in rad/s")
     run.add_argument(
-        "--corner-radius", type=float, default=0.12,
-        help="square corner radius; 0.12 m keeps desired yaw rate below bridge limit",
+        "--square-profile", choices=["auto", "1m", "2m"], default="auto",
+        help="validated square profile; auto defaults to 2m or follows --side-length",
     )
+    run.add_argument("--side-length", type=float, default=None)
+    run.add_argument("--corner-speed", type=float, default=None,
+                     help="continuous speed through square corners")
+    run.add_argument("--corner-decel-distance", type=float, default=None,
+                     help="distance used to slow down before and accelerate after a corner")
+    run.add_argument("--desired-speed", type=float, default=None)
+    run.add_argument("--max-w", type=float, default=None)
+    run.add_argument("--min-v", type=float, default=None,
+                     help="minimum forward speed while the continuous reference is moving")
+    run.add_argument("--sharp-corner-w", type=float, default=None,
+                     help="large-error yaw command for an exact continuous corner")
+    run.add_argument("--sharp-corner-blend-start-deg", type=float, default=None,
+                     help="heading error where sharp-corner boost is fully released")
+    run.add_argument("--sharp-corner-blend-full-deg", type=float, default=None,
+                     help="heading error where full sharp-corner boost is applied")
+    run.add_argument("--max-progress-rate", type=float, default=0.30)
+    run.add_argument("--square-laps", type=float, default=1.0,
+                     help="square laps when --duration=0 (default: one quick tuning lap)")
     run.add_argument("--yaw-bias-gain", type=float, default=0.0)
     run.add_argument("--radius-feedback-gain", type=float, default=0.0)
     run.add_argument("--radius-position-gain", type=float, default=0.0)
