@@ -70,8 +70,9 @@ class BSMCEight(Node):
         self.declare_parameter('negative_yaw_rate_feedback_gain', 0.50)
         self.declare_parameter('positive_yaw_rate_feedback_gain', 0.30)
         self.declare_parameter('feedback_speed_floor', 0.05)
-        self.declare_parameter('center_k1', -1.0)
-        self.declare_parameter('center_k1_radius', 0.30)
+        self.declare_parameter('center_k1', 1.5)
+        self.declare_parameter('center_k1_radius', 0.50)
+        self.declare_parameter('v_cmd_scale', 1.0)
 
         self.odom_topic = self.get_parameter('odom_topic').value
         self.A = float(self.get_parameter('amplitude').value)
@@ -148,6 +149,9 @@ class BSMCEight(Node):
         self.CENTER_K1 = self.k1 if center_k1 < 0.0 else center_k1
         self.CENTER_K1_RADIUS = max(
             0.01, float(self.get_parameter('center_k1_radius').value)
+        )
+        self.V_CMD_SCALE = max(
+            0.5, min(1.5, float(self.get_parameter('v_cmd_scale').value))
         )
 
         if self.A <= 0.0:
@@ -677,11 +681,23 @@ class BSMCEight(Node):
         self.yaw_feedforward = self.yaw_bias_gain * self.yaw_bias_integral
 
         # === ĐIỀU KHIỂN W ===
-        w_ff_scale = self.W_FEEDFORWARD_SCALE
-        if w_d < 0.0 and self.W_FEEDFORWARD_SCALE_NEGATIVE > 0.0:
-            w_ff_scale = self.W_FEEDFORWARD_SCALE_NEGATIVE
-        elif w_d > 0.0 and self.W_FEEDFORWARD_SCALE_POSITIVE > 0.0:
-            w_ff_scale = self.W_FEEDFORWARD_SCALE_POSITIVE
+        # Smooth interpolation of w gains near w_d=0 to avoid discontinuity
+        # at the centre crossing where curvature sign changes.
+        W_D_BLEND = 0.02  # rad/s band for linear interpolation
+        if abs(w_d) < W_D_BLEND:
+            # alpha: 0 = fully negative, 1 = fully positive
+            alpha = (w_d + W_D_BLEND) / (2.0 * W_D_BLEND)
+            alpha = max(0.0, min(1.0, alpha))
+            w_ff_neg = self.W_FEEDFORWARD_SCALE_NEGATIVE if self.W_FEEDFORWARD_SCALE_NEGATIVE > 0.0 else self.W_FEEDFORWARD_SCALE
+            w_ff_pos = self.W_FEEDFORWARD_SCALE_POSITIVE if self.W_FEEDFORWARD_SCALE_POSITIVE > 0.0 else self.W_FEEDFORWARD_SCALE
+            w_ff_scale = (1.0 - alpha) * w_ff_neg + alpha * w_ff_pos
+            yaw_rate_gain = (1.0 - alpha) * self.NEGATIVE_YAW_RATE_FEEDBACK_GAIN + alpha * self.POSITIVE_YAW_RATE_FEEDBACK_GAIN
+        elif w_d < 0.0:
+            w_ff_scale = self.W_FEEDFORWARD_SCALE_NEGATIVE if self.W_FEEDFORWARD_SCALE_NEGATIVE > 0.0 else self.W_FEEDFORWARD_SCALE
+            yaw_rate_gain = self.NEGATIVE_YAW_RATE_FEEDBACK_GAIN
+        else:
+            w_ff_scale = self.W_FEEDFORWARD_SCALE_POSITIVE if self.W_FEEDFORWARD_SCALE_POSITIVE > 0.0 else self.W_FEEDFORWARD_SCALE
+            yaw_rate_gain = self.POSITIVE_YAW_RATE_FEEDBACK_GAIN
         v_feedback = max(v_d, self.FEEDBACK_SPEED_FLOOR)
         w_cmd = (
             entry_scale * w_ff_scale * w_d
@@ -689,22 +705,18 @@ class BSMCEight(Node):
             + self.Ks2 * sat_s2
             + self.yaw_feedforward
         )
-        # The physical yaw response lags strongly on the negative-curvature
-        # lobe. Track the computed yaw command with measured-rate feedback so
-        # the robot accelerates and releases its turn at the intended phase.
-        if w_d < 0.0 and self.NEGATIVE_YAW_RATE_FEEDBACK_GAIN > 0.0:
-            w_cmd += self.NEGATIVE_YAW_RATE_FEEDBACK_GAIN * (
-                w_cmd - self.current_w
-            )
-        elif w_d > 0.0 and self.POSITIVE_YAW_RATE_FEEDBACK_GAIN > 0.0:
-            w_cmd += self.POSITIVE_YAW_RATE_FEEDBACK_GAIN * (
-                w_cmd - self.current_w
-            )
+        # Yaw-rate tracking feedback — gain now smoothly interpolated
+        # near the centre crossing instead of switching abruptly.
+        if yaw_rate_gain > 0.0:
+            w_cmd += yaw_rate_gain * (w_cmd - self.current_w)
 
         # === BOOST VẬN TỐC KHI KHỞI ĐỘNG ===
         startup_boost = 1.0
         if trajectory_t < 5.0:
             startup_boost = 1.0 + 0.5 * (1.0 - trajectory_t / 5.0)
+
+        # === SCALE V (compensate hardware velocity gain) ===
+        v_cmd = v_cmd * self.V_CMD_SCALE
 
         # === CLAMP V ===
         v_cmd = max(self.MIN_V, min(self.MAX_V * startup_boost, v_cmd))

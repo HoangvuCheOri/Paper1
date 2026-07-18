@@ -44,6 +44,7 @@ setup(
             'spin_test = amr_control.spin_test:main',
             'square_tuning_report = amr_control.square_tuning_report:main',
             'eight_tuning_report = amr_control.eight_tuning_report:main',
+            'circle_tuning_report = amr_control.circle_tuning_report:main',
         ],
     },
 )

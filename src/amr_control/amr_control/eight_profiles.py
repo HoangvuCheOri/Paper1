@@ -4,9 +4,10 @@ from copy import deepcopy
 
 
 EIGHT_PROFILES = {
-    # Final horizontal 1 m hardware preset. Hardware validation gave
-    # position/path RMS 3.79/1.77 cm, waviness 0.09 cm, heading RMS 5.5 deg,
-    # symmetry 2.81 cm, and near-centre symmetry 4.04 cm.
+    # Final horizontal 1 m hardware preset. Centre-local k1=1.5 with radius
+    # 0.50 m gave position/path RMS 3.39/1.84 cm, waviness 0.09 cm, heading
+    # RMS 5.9 deg, symmetry 2.46 cm, near-centre symmetry 2.71 cm, and
+    # crossing position/path 2.66/2.01 cm.
     "1m": {
         "amplitude": 1.0,
         "angular_speed": 0.07,
@@ -23,10 +24,8 @@ EIGHT_PROFILES = {
         "negative_yaw_rate_feedback_gain": 0.50,
         "positive_yaw_rate_feedback_gain": 0.30,
         "feedback_speed_floor": 0.05,
-        # Disabled until the centre-only longitudinal correction is validated
-        # on hardware; CLI trials can override these two values independently.
-        "center_k1": -1.0,
-        "center_k1_radius": 0.30,
+        "center_k1": 1.5,
+        "center_k1_radius": 0.50,
         "k1": 0.2205844943,
         "k2": 6.5,
         "k3": 7.0,

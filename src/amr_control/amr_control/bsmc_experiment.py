@@ -22,6 +22,7 @@ from amr_control.square_profiles import (
     profile_name_for_side,
 )
 from amr_control.eight_profiles import get_eight_profile
+from amr_control.circle_profiles import get_circle_profile
 
 
 def yaw_from_quaternion(q):
@@ -171,7 +172,7 @@ def preflight_ok(summary):
 
 
 DEFAULT_GAINS = {
-    "circle": {"k1": 0.40, "k2": 2.4, "k3": 3.5, "ks1": 0.20, "ks2": 0.40, "phi1": 1.0, "phi2": 1.5},
+    "circle": {"k1": 1.163, "k2": 4.499, "k3": 3.300, "ks1": 0.0, "ks2": 0.0, "phi1": 1.0, "phi2": 1.5},
     "eight": {"k1": 0.2205844943, "k2": 6.5, "k3": 7.0, "ks1": 0.0368328900, "ks2": 0.1159106176, "phi1": 1.0, "phi2": 1.5},
     # k2/k3 are replaced by the selected validated square profile.
     "square": {"k1": 0.80, "k2": 6.0, "k3": 7.0, "ks1": 0.08, "ks2": 0.10, "phi1": 1.0, "phi2": 1.5},
@@ -299,6 +300,16 @@ def resolve_eight_profile(args):
             setattr(args, argument, value)
 
 
+def resolve_circle_profile(args):
+    """Fill unset circle arguments from the stable 1 m baseline."""
+    if args.trajectory != "circle":
+        return
+    profile = get_circle_profile(args.circle_profile)
+    for argument, value in profile.items():
+        if argument != "name" and getattr(args, argument) is None:
+            setattr(args, argument, value)
+
+
 def validate_run_args(args):
     if args.duration < 0.0:
         raise SystemExit("--duration must be >= 0")
@@ -308,6 +319,8 @@ def validate_run_args(args):
     if args.trajectory == "circle":
         if args.radius <= 0.0:
             raise SystemExit("--radius must be positive")
+        if args.angular_speed <= 0.0:
+            raise SystemExit("--angular-speed must be positive")
     elif args.trajectory == "eight":
         if args.amplitude <= 0.0:
             raise SystemExit("--amplitude must be positive")
@@ -388,6 +401,14 @@ def validate_run_args(args):
 def run_experiment(args):
     resolve_square_profile(args)
     resolve_eight_profile(args)
+    resolve_circle_profile(args)
+    for name in (
+        "yaw_bias_gain", "radius_feedback_gain", "radius_position_gain"
+    ):
+        if getattr(args, name) is None:
+            setattr(args, name, 0.0)
+    if getattr(args, "v_cmd_scale", None) is None:
+        args.v_cmd_scale = 1.0
     validate_run_args(args)
     # Preflight with retry — robot may still be decelerating from previous run
     max_attempts = 3
@@ -493,6 +514,7 @@ def run_experiment(args):
         controller_cmd.extend([
             "-p", f"k2:={gains['k2']}", "-p", f"k3:={gains['k3']}",
             "-p", f"radius:={args.radius}",
+            "-p", f"angular_speed:={args.angular_speed}",
             "-p", f"yaw_bias_gain:={args.yaw_bias_gain}",
             "-p", f"radius_feedback_gain:={args.radius_feedback_gain}",
             "-p", f"radius_position_gain:={args.radius_position_gain}",
@@ -515,6 +537,7 @@ def run_experiment(args):
             "-p", f"feedback_speed_floor:={args.feedback_speed_floor}",
             "-p", f"center_k1:={args.center_k1}",
             "-p", f"center_k1_radius:={args.center_k1_radius}",
+            "-p", f"v_cmd_scale:={args.v_cmd_scale}",
         ])
         controller_cmd.extend([
             "-p", f"path_rotation_deg:={args.path_rotation_deg}",
@@ -623,6 +646,7 @@ def run_experiment(args):
             "radius_feedback_gain": args.radius_feedback_gain,
             "radius_position_gain": args.radius_position_gain,
             "side_length": getattr(args, "side_length", ""),
+            "circle_profile": getattr(args, "circle_profile", ""),
             "eight_profile": getattr(args, "eight_profile", ""),
             "square_profile": getattr(args, "square_profile", ""),
             "corner_speed": getattr(args, "corner_speed", ""),
@@ -682,6 +706,15 @@ def run_experiment(args):
             print(f"csv={csv_path}")
         except Exception as exc:
             print(f"WARNING: could not create figure-8 tuning report: {exc}")
+    if status == "complete" and args.trajectory == "circle":
+        try:
+            from amr_control.circle_tuning_report import analyze, _print_summary
+            summary, _, plot_path = analyze(
+                csv_path, output_dir / "circle_reports"
+            )
+            _print_summary(summary, plot_path, csv_path)
+        except Exception as exc:
+            print(f"WARNING: could not create circle tuning report: {exc}")
     return {
         "file": csv_path, "status": status, "gains": gains,
         "run_id": run_id, "start_pose": start_pose,
@@ -1008,7 +1041,8 @@ def build_parser():
     run.add_argument("--ks2", type=float, default=None)
     run.add_argument("--phi1", type=float, default=None)
     run.add_argument("--phi2", type=float, default=None)
-    run.add_argument("--radius", type=float, default=1.0)
+    run.add_argument("--circle-profile", choices=["1m"], default="1m")
+    run.add_argument("--radius", type=float, default=None)
     run.add_argument("--eight-profile", choices=["1m"], default="1m")
     run.add_argument("--amplitude", type=float, default=None, help="figure-8 half-width; total width is 2A")
     run.add_argument("--angular-speed", type=float, default=None, help="figure-8 phase rate in rad/s")
@@ -1065,6 +1099,10 @@ def build_parser():
         help="radius in metres over which --center-k1 blends into --k1",
     )
     run.add_argument(
+        "--v-cmd-scale", type=float, default=None,
+        help="scale factor on v_cmd to compensate hardware velocity gain mismatch",
+    )
+    run.add_argument(
         "--square-profile", choices=["auto", "1m", "2m"], default="auto",
         help="validated square profile; auto defaults to 2m or follows --side-length",
     )
@@ -1086,9 +1124,9 @@ def build_parser():
     run.add_argument("--max-progress-rate", type=float, default=0.30)
     run.add_argument("--square-laps", type=float, default=1.0,
                      help="square laps when --duration=0 (default: one quick tuning lap)")
-    run.add_argument("--yaw-bias-gain", type=float, default=0.0)
-    run.add_argument("--radius-feedback-gain", type=float, default=0.0)
-    run.add_argument("--radius-position-gain", type=float, default=0.0)
+    run.add_argument("--yaw-bias-gain", type=float, default=None)
+    run.add_argument("--radius-feedback-gain", type=float, default=None)
+    run.add_argument("--radius-position-gain", type=float, default=None)
 
     rank = sub.add_parser("rank", help="rank logged gain runs using active-motion samples")
     rank.add_argument("--manifest", default="paper_logs/gain_tuning/gain_manifest.csv")

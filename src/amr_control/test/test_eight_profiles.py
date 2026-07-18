@@ -14,7 +14,7 @@ def test_one_metre_profile_is_complete():
     assert profile["negative_yaw_rate_feedback_gain"] == 0.50
     assert profile["positive_yaw_rate_feedback_gain"] == 0.30
     assert profile["feedback_speed_floor"] == 0.05
-    assert profile["center_k1"] == -1.0
+    assert profile["center_k1"] == 0.45
     assert profile["center_k1_radius"] == 0.30
     assert profile["initial_align_time"] == 0.0
     assert profile["initial_align_timeout"] >= profile["initial_align_time"]
