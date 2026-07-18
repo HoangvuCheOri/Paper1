@@ -1,0 +1,3 @@
+camera_max_position_m,camera_rmse_heading_deg,camera_rmse_position_m,command_saturation_fraction,convergence_time_s,file,k1,k2,k3,ks1,ks2,mean_score,phi1,phi2,rejected_max_error,repeat,result_type,score,score_std,trajectory_closure_error_m,trial,worst_camera_error_m,worst_trajectory_closure_m
+0.10693631416698542,6.288241980630118,0.07558028424161935,0.0,nan,/home/hoang/Paper1/paper_logs/optuna_smoke_v3/eight/20260712_190958_eight_BSMC_fusion_optuna_t001_r01.csv,0.4,2.4,3.5,0.0225,0.07500000000000001,,1.0,1.5,,1,run,0.17645239248950254,,0.0008549319961358759,1,,
+,,,,,,0.4,2.4,3.5,0.0225,0.07500000000000001,0.17645239248950254,1.0,1.5,False,all,candidate,0.17645239248950254,0.0,,1,0.10693631416698542,0.0008549319961358759

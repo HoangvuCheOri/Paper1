@@ -21,6 +21,7 @@ from amr_control.square_profiles import (
     get_square_profile,
     profile_name_for_side,
 )
+from amr_control.eight_profiles import get_eight_profile
 
 
 def yaw_from_quaternion(q):
@@ -171,12 +172,12 @@ def preflight_ok(summary):
 
 DEFAULT_GAINS = {
     "circle": {"k1": 0.40, "k2": 2.4, "k3": 3.5, "ks1": 0.20, "ks2": 0.40, "phi1": 1.0, "phi2": 1.5},
-    "eight": {"k1": 0.2205844943, "k2": 3.9097295565, "k3": 5.2459918836, "ks1": 0.0368328900, "ks2": 0.1159106176, "phi1": 1.0, "phi2": 1.5},
+    "eight": {"k1": 0.2205844943, "k2": 6.5, "k3": 7.0, "ks1": 0.0368328900, "ks2": 0.1159106176, "phi1": 1.0, "phi2": 1.5},
     # k2/k3 are replaced by the selected validated square profile.
     "square": {"k1": 0.80, "k2": 6.0, "k3": 7.0, "ks1": 0.08, "ks2": 0.10, "phi1": 1.0, "phi2": 1.5},
 }
 
-DEFAULT_DURATION = {"circle": 63.0, "eight": 90.0, "square": 45.0}
+DEFAULT_DURATION = {"circle": 63.0, "eight": 104.0, "square": 45.0}
 
 
 def square_run_duration(side_length, desired_speed, laps=1.0):
@@ -288,6 +289,16 @@ def resolve_square_profile(args):
     args.square_profile = name
 
 
+def resolve_eight_profile(args):
+    """Fill unset figure-8 arguments from the validated 1 m profile."""
+    if args.trajectory != "eight":
+        return
+    profile = get_eight_profile(args.eight_profile)
+    for argument, value in profile.items():
+        if argument != "name" and getattr(args, argument) is None:
+            setattr(args, argument, value)
+
+
 def validate_run_args(args):
     if args.duration < 0.0:
         raise SystemExit("--duration must be >= 0")
@@ -300,6 +311,38 @@ def validate_run_args(args):
     elif args.trajectory == "eight":
         if args.amplitude <= 0.0:
             raise SystemExit("--amplitude must be positive")
+        if args.trajectory_ramp_time <= 0.0:
+            raise SystemExit("--trajectory-ramp-time must be positive")
+        if args.path_rotation_deg is not None and not finite(args.path_rotation_deg):
+            raise SystemExit("--path-rotation-deg must be finite")
+        if not finite(args.entry_heading_blend_time) or args.entry_heading_blend_time < 0.0:
+            raise SystemExit("--entry-heading-blend-time must be finite and >= 0")
+        if args.initial_align_time < 0.0:
+            raise SystemExit("--initial-align-time must be >= 0")
+        if args.initial_align_timeout < args.initial_align_time:
+            raise SystemExit(
+                "--initial-align-timeout must be >= --initial-align-time"
+            )
+        if args.w_feedforward_scale <= 0.0:
+            raise SystemExit("--w-feedforward-scale must be > 0")
+        for name in (
+            "w_feedforward_scale_negative", "w_feedforward_scale_positive"
+        ):
+            value = getattr(args, name)
+            if value != -1.0 and value <= 0.0:
+                raise SystemExit(
+                    f"--{name.replace('_', '-')} must be > 0 or -1 to inherit"
+                )
+        if args.negative_yaw_rate_feedback_gain < 0.0:
+            raise SystemExit("--negative-yaw-rate-feedback-gain must be >= 0")
+        if args.positive_yaw_rate_feedback_gain < 0.0:
+            raise SystemExit("--positive-yaw-rate-feedback-gain must be >= 0")
+        if args.feedback_speed_floor < 0.0:
+            raise SystemExit("--feedback-speed-floor must be >= 0")
+        if args.center_k1 != -1.0 and args.center_k1 < 0.0:
+            raise SystemExit("--center-k1 must be >= 0 or -1 to inherit --k1")
+        if args.center_k1_radius <= 0.0:
+            raise SystemExit("--center-k1-radius must be > 0")
     elif args.trajectory == "square":
         if args.side_length <= 0.0:
             raise SystemExit("--side-length must be positive")
@@ -344,6 +387,7 @@ def validate_run_args(args):
 
 def run_experiment(args):
     resolve_square_profile(args)
+    resolve_eight_profile(args)
     validate_run_args(args)
     # Preflight with retry — robot may still be decelerating from previous run
     max_attempts = 3
@@ -458,8 +502,22 @@ def run_experiment(args):
             "-p", f"k2:={gains['k2']}", "-p", f"k3:={gains['k3']}",
             "-p", f"amplitude:={args.amplitude}",
             "-p", f"angular_speed:={getattr(args, 'angular_speed', 0.20)}",
+            "-p", f"trajectory_ramp_time:={args.trajectory_ramp_time}",
+            "-p", f"entry_heading_blend_time:={args.entry_heading_blend_time}",
             "-p", f"yaw_bias_gain:={args.yaw_bias_gain}",
-            "-p", "periods:=1.0",
+            "-p", f"initial_align_time:={args.initial_align_time}",
+            "-p", f"initial_align_timeout:={args.initial_align_timeout}",
+            "-p", f"w_feedforward_scale:={args.w_feedforward_scale}",
+            "-p", f"w_feedforward_scale_negative:={args.w_feedforward_scale_negative}",
+            "-p", f"w_feedforward_scale_positive:={args.w_feedforward_scale_positive}",
+            "-p", f"negative_yaw_rate_feedback_gain:={args.negative_yaw_rate_feedback_gain}",
+            "-p", f"positive_yaw_rate_feedback_gain:={args.positive_yaw_rate_feedback_gain}",
+            "-p", f"feedback_speed_floor:={args.feedback_speed_floor}",
+            "-p", f"center_k1:={args.center_k1}",
+            "-p", f"center_k1_radius:={args.center_k1_radius}",
+        ])
+        controller_cmd.extend([
+            "-p", f"path_rotation_deg:={args.path_rotation_deg}",
         ])
     else:
         desired_speed = getattr(args, "desired_speed", 0.10)
@@ -539,9 +597,33 @@ def run_experiment(args):
             "ks1": gains["ks1"], "ks2": gains["ks2"],
             "phi1": gains["phi1"], "phi2": gains["phi2"],
             "yaw_bias_gain": args.yaw_bias_gain,
+            "amplitude": getattr(args, "amplitude", ""),
+            "angular_speed": getattr(args, "angular_speed", ""),
+            "trajectory_ramp_time": getattr(args, "trajectory_ramp_time", ""),
+            "path_rotation_deg": getattr(args, "path_rotation_deg", ""),
+            "entry_heading_blend_time": getattr(args, "entry_heading_blend_time", ""),
+            "initial_align_time": getattr(args, "initial_align_time", ""),
+            "initial_align_timeout": getattr(args, "initial_align_timeout", ""),
+            "w_feedforward_scale": getattr(args, "w_feedforward_scale", ""),
+            "w_feedforward_scale_negative": getattr(
+                args, "w_feedforward_scale_negative", ""
+            ),
+            "w_feedforward_scale_positive": getattr(
+                args, "w_feedforward_scale_positive", ""
+            ),
+            "negative_yaw_rate_feedback_gain": getattr(
+                args, "negative_yaw_rate_feedback_gain", ""
+            ),
+            "positive_yaw_rate_feedback_gain": getattr(
+                args, "positive_yaw_rate_feedback_gain", ""
+            ),
+            "feedback_speed_floor": getattr(args, "feedback_speed_floor", ""),
+            "center_k1": getattr(args, "center_k1", ""),
+            "center_k1_radius": getattr(args, "center_k1_radius", ""),
             "radius_feedback_gain": args.radius_feedback_gain,
             "radius_position_gain": args.radius_position_gain,
             "side_length": getattr(args, "side_length", ""),
+            "eight_profile": getattr(args, "eight_profile", ""),
             "square_profile": getattr(args, "square_profile", ""),
             "corner_speed": getattr(args, "corner_speed", ""),
             "corner_decel_distance": getattr(args, "corner_decel_distance", ""),
@@ -577,6 +659,29 @@ def run_experiment(args):
             )
         except Exception as exc:
             print(f"WARNING: could not create square tuning report: {exc}")
+    if status == "complete" and args.trajectory == "eight":
+        try:
+            from amr_control.eight_tuning_report import analyze
+            summary, _, plot_path = analyze(
+                csv_path, output_dir / "eight_reports"
+            )
+            print(
+                "Eight report: "
+                f"position/path RMS={100*summary['position_rmse_m']:.2f}/"
+                f"{100*summary['path_rmse_m']:.2f} cm, "
+                f"waviness RMS={100*summary['waviness_rmse_m']:.2f} cm, "
+                f"heading RMS={summary['heading_rmse_deg']:.1f} deg, "
+                f"bias={100*summary['lateral_bias_m']:+.2f} cm, "
+                f"cmd_w RMS={summary['cmd_w_rms_rad_s']:.3f} rad/s, "
+                f"symmetry RMS={100*summary['lobe_symmetry_rmse_m']:.2f} cm, "
+                f"near-center={100*summary['near_center_symmetry_rmse_m']:.2f} cm, "
+                f"crossing position/path={100*summary['center_position_rmse_m']:.2f}/"
+                f"{100*summary['center_path_rmse_m']:.2f} cm, "
+                f"plot={plot_path}"
+            )
+            print(f"csv={csv_path}")
+        except Exception as exc:
+            print(f"WARNING: could not create figure-8 tuning report: {exc}")
     return {
         "file": csv_path, "status": status, "gains": gains,
         "run_id": run_id, "start_pose": start_pose,
@@ -904,8 +1009,61 @@ def build_parser():
     run.add_argument("--phi1", type=float, default=None)
     run.add_argument("--phi2", type=float, default=None)
     run.add_argument("--radius", type=float, default=1.0)
-    run.add_argument("--amplitude", type=float, default=0.5, help="figure-8 half-width; total width is 2A")
-    run.add_argument("--angular-speed", type=float, default=0.20, help="figure-8 phase rate in rad/s")
+    run.add_argument("--eight-profile", choices=["1m"], default="1m")
+    run.add_argument("--amplitude", type=float, default=None, help="figure-8 half-width; total width is 2A")
+    run.add_argument("--angular-speed", type=float, default=None, help="figure-8 phase rate in rad/s")
+    run.add_argument(
+        "--trajectory-ramp-time", type=float, default=None,
+        help="seconds for the figure-8 phase rate to reach its nominal value",
+    )
+    run.add_argument(
+        "--path-rotation-deg", type=float, default=None,
+        help="absolute figure-8 long-axis rotation in the odometry world frame",
+    )
+    run.add_argument(
+        "--entry-heading-blend-time", type=float, default=None,
+        help="seconds to ramp heading feedback while moving into the right lobe",
+    )
+    run.add_argument(
+        "--initial-align-time", type=float, default=None,
+        help="seconds to align with the figure-8 centre tangent before moving",
+    )
+    run.add_argument(
+        "--initial-align-timeout", type=float, default=None,
+        help="stop instead of moving if initial heading is not aligned in time",
+    )
+    run.add_argument(
+        "--w-feedforward-scale", type=float, default=None,
+        help="scale applied only to figure-8 curvature feedforward w_d",
+    )
+    run.add_argument(
+        "--w-feedforward-scale-negative", type=float, default=None,
+        help="negative-curvature override; -1 inherits the common scale",
+    )
+    run.add_argument(
+        "--w-feedforward-scale-positive", type=float, default=None,
+        help="positive-curvature override; -1 inherits the common scale",
+    )
+    run.add_argument(
+        "--negative-yaw-rate-feedback-gain", type=float, default=None,
+        help="measured yaw-rate tracking feedback on the right lobe",
+    )
+    run.add_argument(
+        "--positive-yaw-rate-feedback-gain", type=float, default=None,
+        help="measured yaw-rate tracking feedback on the left lobe",
+    )
+    run.add_argument(
+        "--feedback-speed-floor", type=float, default=None,
+        help="minimum v_d multiplier used only by figure-8 feedback terms",
+    )
+    run.add_argument(
+        "--center-k1", type=float, default=None,
+        help="longitudinal gain near figure-8 crossings; -1 inherits --k1",
+    )
+    run.add_argument(
+        "--center-k1-radius", type=float, default=None,
+        help="radius in metres over which --center-k1 blends into --k1",
+    )
     run.add_argument(
         "--square-profile", choices=["auto", "1m", "2m"], default="auto",
         help="validated square profile; auto defaults to 2m or follows --side-length",

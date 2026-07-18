@@ -1,0 +1,2 @@
+file,controller,trajectory,run_id,source,status,odom_topic,start_camera_x,start_camera_y,start_camera_yaw,k1,k2,k3,ks1,ks2,phi1,phi2,yaw_bias_gain,radius_feedback_gain,radius_position_gain
+/home/hoang/Paper1/paper_logs/optuna_smoke_v3/eight/20260712_190958_eight_BSMC_fusion_optuna_t001_r01.csv,BSMC,eight,optuna_t001_r01,fusion,complete,/odometry/filtered,-0.0030581779894419013,0.023052414832636713,0.04447676004134143,0.4,2.4,3.5,0.0225,0.07500000000000001,1.0,1.5,0.0,0.0,0.0

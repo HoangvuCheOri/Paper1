@@ -1,0 +1,13 @@
+{
+  "input": "/home/hoang/Paper1/paper_logs/square_1m/20260717_171847_square_BSMC_fusion_square_1m_v5_corner_only_damping.csv",
+  "n_complete_edges": 4,
+  "straight_lateral_bias_m": 0.020917150679742424,
+  "straight_lateral_rmse_m": 0.02237778908157192,
+  "straight_lateral_max_abs_m": 0.036770365455453716,
+  "straight_waviness_rms_m": 0.005979785938646755,
+  "straight_lateral_peak_to_peak_max_m": 0.026001670184248774,
+  "straight_heading_rmse_deg": 1.7238012951700776,
+  "straight_cmd_w_rms_rad_s": 0.02434357310697154,
+  "overall_position_rmse_m": 0.030600354800230472,
+  "overall_heading_rmse_deg": 32.60509118339896
+}

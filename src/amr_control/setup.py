@@ -43,6 +43,7 @@ setup(
             'optuna_bsmc_tuning = amr_control.optuna_bsmc_tuning:main',
             'spin_test = amr_control.spin_test:main',
             'square_tuning_report = amr_control.square_tuning_report:main',
+            'eight_tuning_report = amr_control.eight_tuning_report:main',
         ],
     },
 )

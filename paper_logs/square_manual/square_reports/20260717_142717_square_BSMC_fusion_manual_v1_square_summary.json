@@ -1,0 +1,11 @@
+{
+  "input": "/home/hoang/Paper1/paper_logs/square_manual/20260717_142717_square_BSMC_fusion_manual_v1.csv",
+  "n_complete_edges": 4,
+  "straight_lateral_bias_m": -0.02114549147620094,
+  "straight_waviness_rms_m": 0.03553061289145175,
+  "straight_lateral_peak_to_peak_max_m": 0.14422780318377965,
+  "straight_heading_rmse_deg": 13.345245376743945,
+  "straight_cmd_w_rms_rad_s": 0.18587018248511028,
+  "overall_position_rmse_m": 0.05936353846621801,
+  "overall_heading_rmse_deg": 14.574567127500304
+}

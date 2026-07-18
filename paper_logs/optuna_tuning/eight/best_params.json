@@ -1,0 +1,23 @@
+{
+  "method": "Bayesian Optimization (Optuna TPE)",
+  "trajectory": "eight",
+  "source": "fusion",
+  "best_score": 0.09565357696756627,
+  "best_params": {
+    "k1": 0.2940404778165222,
+    "k2": 6.548494769354795,
+    "k3": 9.966140519853202,
+    "ks1": 0.07779097441154559,
+    "ks2": 0.2236925381907645
+  },
+  "lyapunov_bounds": {
+    "ks1_min": 0.0225,
+    "ks2_min": 0.07500000000000001,
+    "ks1_max": 0.09,
+    "ks2_max": 0.30000000000000004
+  },
+  "n_trials_completed": 30,
+  "n_trials_requested": 30,
+  "tune_phi": false,
+  "duration_per_trial_s": 47.387804982947834
+}

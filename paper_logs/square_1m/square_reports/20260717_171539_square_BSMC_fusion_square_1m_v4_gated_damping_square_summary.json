@@ -1,0 +1,13 @@
+{
+  "input": "/home/hoang/Paper1/paper_logs/square_1m/20260717_171539_square_BSMC_fusion_square_1m_v4_gated_damping.csv",
+  "n_complete_edges": 4,
+  "straight_lateral_bias_m": 0.02451300949556527,
+  "straight_lateral_rmse_m": 0.027899388012755995,
+  "straight_lateral_max_abs_m": 0.0462690206048928,
+  "straight_waviness_rms_m": 0.005056220514984589,
+  "straight_lateral_peak_to_peak_max_m": 0.023925761350416734,
+  "straight_heading_rmse_deg": 1.6317663306300396,
+  "straight_cmd_w_rms_rad_s": 0.02109109346636044,
+  "overall_position_rmse_m": 0.03339885444759855,
+  "overall_heading_rmse_deg": 28.7880719494118
+}

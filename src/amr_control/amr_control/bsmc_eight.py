@@ -23,7 +23,8 @@ class BSMCEight(Node):
         ω = tốc độ góc (angular_speed)
 
     Tâm hình số 8 nằm tại vị trí ban đầu (x0, y0) của robot.
-    Robot bắt đầu đi từ tâm, vòng lên trên rồi vòng xuống dưới.
+    Reference giữ nguyên hình học; heading feedback được đưa vào từ từ lúc đầu
+    để xe yaw=0 chạy ngay mà không tạo cú đảo lái lớn.
     """
 
     def __init__(self):
@@ -35,26 +36,49 @@ class BSMCEight(Node):
         self.desired_mode_pub = self.create_publisher(String, '/desired_trajectory_mode', 10)
 
         self.declare_parameter('odom_topic', '/odometry/filtered')
-        self.declare_parameter('amplitude', 1.1)       # A: bán kính mỗi nửa vòng (m)
-        self.declare_parameter('angular_speed', 0.20)   # ω: tốc độ góc (rad/s)
+        self.declare_parameter('amplitude', 1.0)       # A: bán kính mỗi nửa vòng (m)
+        self.declare_parameter('angular_speed', 0.07)   # ω: tốc độ góc (rad/s)
+        self.declare_parameter('trajectory_ramp_time', 12.0)
         self.declare_parameter('control_frequency', 25.0)
         self.declare_parameter('startup_delay', 1.0)
         self.declare_parameter('settle_time', 2.0)
-        self.declare_parameter('k1', 0.40)
-        self.declare_parameter('k2', 2.8)
-        self.declare_parameter('k3', 4.2)
-        self.declare_parameter('ks1', 0.04)
-        self.declare_parameter('ks2', 0.20)
+        self.declare_parameter('k1', 0.2205844943)
+        self.declare_parameter('k2', 6.5)
+        self.declare_parameter('k3', 7.0)
+        self.declare_parameter('ks1', 0.03683289)
+        self.declare_parameter('ks2', 0.1159106176)
         self.declare_parameter('phi1', 1.0)
-        self.declare_parameter('phi2', 0.60)
+        self.declare_parameter('phi2', 1.5)
         self.declare_parameter('max_v', 0.18)
         self.declare_parameter('max_w', 0.85)
         self.declare_parameter('min_v', 0.0)
         self.declare_parameter('invert_ey', False)
+        self.declare_parameter('yaw_bias_gain', 0.0)
+        # Absolute rotation in the odometry/camera world frame. Zero keeps
+        # the long axis of the figure-8 horizontal even when initial yaw is 0.
+        self.declare_parameter('path_rotation_deg', 0.0)
+        self.declare_parameter('entry_heading_blend_time', 2.0)
+        self.declare_parameter('initial_align_time', 0.0)
+        self.declare_parameter('initial_align_kp', 1.2)
+        self.declare_parameter('initial_align_max_w', 0.35)
+        self.declare_parameter('initial_align_tolerance_deg', 3.0)
+        self.declare_parameter('initial_align_hold_time', 0.30)
+        self.declare_parameter('initial_align_timeout', 12.0)
+        self.declare_parameter('w_feedforward_scale', 0.80)
+        self.declare_parameter('w_feedforward_scale_negative', 0.55)
+        self.declare_parameter('w_feedforward_scale_positive', 0.80)
+        self.declare_parameter('negative_yaw_rate_feedback_gain', 0.50)
+        self.declare_parameter('positive_yaw_rate_feedback_gain', 0.30)
+        self.declare_parameter('feedback_speed_floor', 0.05)
+        self.declare_parameter('center_k1', -1.0)
+        self.declare_parameter('center_k1_radius', 0.30)
 
         self.odom_topic = self.get_parameter('odom_topic').value
         self.A = float(self.get_parameter('amplitude').value)
         self.W = float(self.get_parameter('angular_speed').value)
+        self.TRAJECTORY_RAMP_TIME = max(
+            0.1, float(self.get_parameter('trajectory_ramp_time').value)
+        )
 
         control_frequency = max(1.0, float(self.get_parameter('control_frequency').value))
         self.timer_period = 1.0 / control_frequency
@@ -72,6 +96,59 @@ class BSMCEight(Node):
         self.MAX_W = float(self.get_parameter('max_w').value)
         self.MIN_V = float(self.get_parameter('min_v').value)
         self.INVERT_EY = bool(self.get_parameter('invert_ey').value)
+        self.yaw_bias_gain = float(self.get_parameter('yaw_bias_gain').value)
+        self.PATH_ROTATION_DEG = float(
+            self.get_parameter('path_rotation_deg').value
+        )
+        self.ENTRY_HEADING_BLEND_TIME = max(
+            0.0, float(self.get_parameter('entry_heading_blend_time').value)
+        )
+        self.INITIAL_ALIGN_TIME = max(
+            0.0, float(self.get_parameter('initial_align_time').value)
+        )
+        self.INITIAL_ALIGN_KP = max(
+            0.0, float(self.get_parameter('initial_align_kp').value)
+        )
+        self.INITIAL_ALIGN_MAX_W = max(
+            0.0, float(self.get_parameter('initial_align_max_w').value)
+        )
+        self.INITIAL_ALIGN_TOLERANCE = math.radians(max(
+            0.1, float(self.get_parameter('initial_align_tolerance_deg').value)
+        ))
+        self.INITIAL_ALIGN_HOLD_TIME = max(
+            0.0, float(self.get_parameter('initial_align_hold_time').value)
+        )
+        self.INITIAL_ALIGN_TIMEOUT = max(
+            self.INITIAL_ALIGN_TIME,
+            float(self.get_parameter('initial_align_timeout').value),
+        )
+        self.W_FEEDFORWARD_SCALE = float(
+            self.get_parameter('w_feedforward_scale').value
+        )
+        self.W_FEEDFORWARD_SCALE_NEGATIVE = float(
+            self.get_parameter('w_feedforward_scale_negative').value
+        )
+        self.W_FEEDFORWARD_SCALE_POSITIVE = float(
+            self.get_parameter('w_feedforward_scale_positive').value
+        )
+        self.NEGATIVE_YAW_RATE_FEEDBACK_GAIN = max(
+            0.0, float(
+                self.get_parameter('negative_yaw_rate_feedback_gain').value
+            )
+        )
+        self.POSITIVE_YAW_RATE_FEEDBACK_GAIN = max(
+            0.0, float(
+                self.get_parameter('positive_yaw_rate_feedback_gain').value
+            )
+        )
+        self.FEEDBACK_SPEED_FLOOR = max(
+            0.0, float(self.get_parameter('feedback_speed_floor').value)
+        )
+        center_k1 = float(self.get_parameter('center_k1').value)
+        self.CENTER_K1 = self.k1 if center_k1 < 0.0 else center_k1
+        self.CENTER_K1_RADIUS = max(
+            0.01, float(self.get_parameter('center_k1_radius').value)
+        )
 
         if self.A <= 0.0:
             self.get_logger().warn("Invalid amplitude <= 0. Using amplitude=0.5m.")
@@ -127,7 +204,6 @@ class BSMCEight(Node):
 
         # Yaw bias estimator: phát hiện robot quay thiếu/quay thừa
         self.yaw_bias_integral = 0.0
-        self.yaw_bias_gain = 0.02
         self.yaw_feedforward = 0.0
 
         self.timer = self.create_timer(self.timer_period, self.control_loop)
@@ -154,6 +230,10 @@ class BSMCEight(Node):
         self.DEADBAND_ETHETA = 0.0
 
         self.debug_counter = 0
+        self.initial_alignment_complete = self.INITIAL_ALIGN_TIME <= 0.0
+        self.initial_alignment_in_tolerance_since = None
+        self.initial_alignment_failed = False
+        self.trajectory_start_track_time = 0.0
 
         # Chu kỳ hình số 8: T = 2*pi / W
         self.T_period = 2.0 * math.pi / self.W
@@ -161,6 +241,8 @@ class BSMCEight(Node):
         self.get_logger().info(
             f"EKF BSMC Figure-8 started: odom_topic={self.odom_topic}, "
             f"A={self.A:.2f}m, W={self.W:.2f}rad/s, "
+            f"trajectory_ramp={self.TRAJECTORY_RAMP_TIME:.1f}s, "
+            f"entry_heading_blend={self.ENTRY_HEADING_BLEND_TIME:.1f}s, "
             f"v_max_traj={self.V_MAX_TRAJECTORY:.3f}m/s, "
             f"max_v={self.MAX_V:.2f}, max_w={self.MAX_W:.2f}, "
             f"k1={self.k1:.2f}, k2={self.k2:.2f}, k3={self.k3:.2f}, "
@@ -261,32 +343,47 @@ class BSMCEight(Node):
         A = self.A
         W = self.W
 
-        # Ramp-up: tăng dần tốc độ trong T_ramp giây đầu
-        T_ramp = 2.5
+        # Ramp-up phase rate, not only the velocity feedforward.  Keeping
+        # phase=W*t while scaling dx/dt made desired position and its
+        # derivatives inconsistent during startup.
+        T_ramp = self.TRAJECTORY_RAMP_TIME
         if t < T_ramp:
             ramp = t / T_ramp
+            phase = W * t * t / (2.0 * T_ramp)
+            phase_rate = W * ramp
+            phase_accel = W / T_ramp
         else:
             ramp = 1.0
+            phase = W * (t - T_ramp / 2.0)
+            phase_rate = W
+            phase_accel = 0.0
 
-        wt = W * t
-
-        # Vị trí trong local frame
-        x_local = A * math.sin(wt)
-        y_local = (A / 2.0) * math.sin(2.0 * wt)
+        x_local = A * math.sin(phase)
+        y_local = (A / 2.0) * math.sin(2.0 * phase)
 
         # Đạo hàm bậc 1 (vận tốc)
-        dx_dt = A * W * math.cos(wt) * ramp
-        dy_dt = A * W * math.cos(2.0 * wt) * ramp
+        dx_dt = A * math.cos(phase) * phase_rate
+        dy_dt = A * math.cos(2.0 * phase) * phase_rate
 
         # Đạo hàm bậc 2 (gia tốc) — cần cho tính w_d
-        d2x_dt2 = -A * W * W * math.sin(wt) * ramp
-        d2y_dt2 = -2.0 * A * W * W * math.sin(2.0 * wt) * ramp
+        d2x_dt2 = A * (
+            -math.sin(phase) * phase_rate**2
+            + math.cos(phase) * phase_accel
+        )
+        d2y_dt2 = A * (
+            -2.0 * math.sin(2.0 * phase) * phase_rate**2
+            + math.cos(2.0 * phase) * phase_accel
+        )
 
         # Vận tốc tuyến tính
         v_d = math.sqrt(dx_dt**2 + dy_dt**2)
 
-        # Heading desired
-        theta_local = math.atan2(dy_dt, dx_dt)
+        # Heading desired. At zero speed use the initial tangent explicitly;
+        # atan2(0, 0) would otherwise create a one-sample heading discontinuity.
+        theta_local = (
+            math.atan2(dy_dt, dx_dt)
+            if v_d > 1e-9 else math.pi / 4.0
+        )
 
         # Vận tốc góc (từ curvature): w = (dx*d2y - dy*d2x) / v^2
         v_sq = v_d**2
@@ -295,13 +392,14 @@ class BSMCEight(Node):
         else:
             w_d = 0.0
 
-        # Xoay quỹ đạo theo hướng ban đầu của robot
-        cos0 = math.cos(self.theta0)
-        sin0 = math.sin(self.theta0)
+        # World-fixed orientation: path_rotation_deg=0 gives a horizontal 8.
+        path_rotation = math.radians(self.PATH_ROTATION_DEG)
+        cos0 = math.cos(path_rotation)
+        sin0 = math.sin(path_rotation)
 
         x_d = self.x0 + cos0 * x_local - sin0 * y_local
         y_d = self.y0 + sin0 * x_local + cos0 * y_local
-        theta_d = self.normalize_angle(self.theta0 + theta_local)
+        theta_d = self.normalize_angle(path_rotation + theta_local)
 
         return x_d, y_d, theta_d, v_d, w_d
 
@@ -430,7 +528,69 @@ class BSMCEight(Node):
             - self.STARTUP_DELAY - self.SETTLE_TIME
         )
 
-        x_d, y_d, theta_d, v_d, w_d = self.generate_desired_trajectory(t_track)
+        # Optional alignment follows the standard centre-crossing tangent.
+        if not self.initial_alignment_complete:
+            target_heading = self.normalize_angle(
+                math.radians(self.PATH_ROTATION_DEG) + math.pi / 4.0
+            )
+            heading_error = self.normalize_angle(
+                target_heading - self.current_theta
+            )
+            w_cmd = max(
+                -self.INITIAL_ALIGN_MAX_W,
+                min(
+                    self.INITIAL_ALIGN_MAX_W,
+                    self.INITIAL_ALIGN_KP * heading_error,
+                ),
+            )
+
+            desired_msg = Point()
+            desired_msg.x = float(self.x0)
+            desired_msg.y = float(self.y0)
+            desired_msg.z = float(target_heading)
+            self.desired_pub.publish(desired_msg)
+            mode_msg = String()
+            mode_msg.data = 'actual'
+            self.desired_mode_pub.publish(mode_msg)
+
+            err_msg = Point()
+            err_msg.z = float(heading_error)
+            self.err_pub.publish(err_msg)
+            cmd_msg = Twist()
+            cmd_msg.angular.z = float(w_cmd)
+            if abs(heading_error) <= self.INITIAL_ALIGN_TOLERANCE:
+                if self.initial_alignment_in_tolerance_since is None:
+                    self.initial_alignment_in_tolerance_since = t_track
+                held = t_track - self.initial_alignment_in_tolerance_since
+                if (
+                    t_track >= self.INITIAL_ALIGN_TIME
+                    and held >= self.INITIAL_ALIGN_HOLD_TIME
+                ):
+                    self.initial_alignment_complete = True
+                    self.trajectory_start_track_time = t_track
+                    self.get_logger().info(
+                        "Initial heading aligned; starting figure-8 phase."
+                    )
+            else:
+                self.initial_alignment_in_tolerance_since = None
+
+            if not self.initial_alignment_complete:
+                if t_track >= self.INITIAL_ALIGN_TIMEOUT:
+                    if not self.initial_alignment_failed:
+                        self.get_logger().error(
+                            "Initial heading alignment timed out; holding stop."
+                        )
+                        self.initial_alignment_failed = True
+                    self.cmd_pub.publish(Twist())
+                else:
+                    self.cmd_pub.publish(cmd_msg)
+                return
+
+            self.cmd_pub.publish(Twist())
+
+        trajectory_t = t_track - self.trajectory_start_track_time
+
+        x_d, y_d, theta_d, v_d, w_d = self.generate_desired_trajectory(trajectory_t)
 
         # Fallback nếu EKF trễ
         if not self._check_ekf_freshness(now_s):
@@ -464,7 +624,25 @@ class BSMCEight(Node):
         if self.INVERT_EY:
             e_y = -e_y
 
-        e_theta = self.normalize_angle(theta_d - self.current_theta)
+        # Keep the geometric reference unchanged, but introduce its 45-deg
+        # initial heading gradually. This prevents the large opposite-sign
+        # steering transient seen when starting immediately from yaw=0.
+        entry_scale = 1.0
+        theta_control = theta_d
+        if (
+            self.ENTRY_HEADING_BLEND_TIME > 0.0
+            and trajectory_t < self.ENTRY_HEADING_BLEND_TIME
+        ):
+            q = max(0.0, trajectory_t / self.ENTRY_HEADING_BLEND_TIME)
+            entry_scale = q * q * (3.0 - 2.0 * q)
+            initial_heading = math.radians(self.PATH_ROTATION_DEG)
+            heading_from_initial = self.normalize_angle(
+                theta_d - initial_heading
+            )
+            theta_control = self.normalize_angle(
+                initial_heading + entry_scale * heading_from_initial
+            )
+        e_theta = self.normalize_angle(theta_control - self.current_theta)
 
         # Deadband
         if abs(e_x) < self.DEADBAND_EX: e_x = 0.0
@@ -479,9 +657,17 @@ class BSMCEight(Node):
         sat_s2 = self.sat(s2 / self.phi2)
 
         # === ĐIỀU KHIỂN V ===
+        # The robot can retain a small phase lead at the centre crossing even
+        # while the two outer lobes track well.  Blend a separate longitudinal
+        # gain only near the geometric centre so correcting that lead does not
+        # disturb the curved outer sections.
+        distance_from_center = math.hypot(x_d - self.x0, y_d - self.y0)
+        center_q = min(1.0, distance_from_center / self.CENTER_K1_RADIUS)
+        center_weight = 1.0 - center_q * center_q * (3.0 - 2.0 * center_q)
+        k1_control = self.k1 + center_weight * (self.CENTER_K1 - self.k1)
         v_cmd = (
             v_d * math.cos(e_theta)
-            + self.k1 * e_x
+            + k1_control * e_x
             + self.Ks1 * sat_s1
         )
 
@@ -491,17 +677,34 @@ class BSMCEight(Node):
         self.yaw_feedforward = self.yaw_bias_gain * self.yaw_bias_integral
 
         # === ĐIỀU KHIỂN W ===
+        w_ff_scale = self.W_FEEDFORWARD_SCALE
+        if w_d < 0.0 and self.W_FEEDFORWARD_SCALE_NEGATIVE > 0.0:
+            w_ff_scale = self.W_FEEDFORWARD_SCALE_NEGATIVE
+        elif w_d > 0.0 and self.W_FEEDFORWARD_SCALE_POSITIVE > 0.0:
+            w_ff_scale = self.W_FEEDFORWARD_SCALE_POSITIVE
+        v_feedback = max(v_d, self.FEEDBACK_SPEED_FLOOR)
         w_cmd = (
-            w_d
-            + v_d * (self.k2 * e_y + self.k3 * math.sin(e_theta))
+            entry_scale * w_ff_scale * w_d
+            + v_feedback * (self.k2 * e_y + self.k3 * math.sin(e_theta))
             + self.Ks2 * sat_s2
             + self.yaw_feedforward
         )
+        # The physical yaw response lags strongly on the negative-curvature
+        # lobe. Track the computed yaw command with measured-rate feedback so
+        # the robot accelerates and releases its turn at the intended phase.
+        if w_d < 0.0 and self.NEGATIVE_YAW_RATE_FEEDBACK_GAIN > 0.0:
+            w_cmd += self.NEGATIVE_YAW_RATE_FEEDBACK_GAIN * (
+                w_cmd - self.current_w
+            )
+        elif w_d > 0.0 and self.POSITIVE_YAW_RATE_FEEDBACK_GAIN > 0.0:
+            w_cmd += self.POSITIVE_YAW_RATE_FEEDBACK_GAIN * (
+                w_cmd - self.current_w
+            )
 
         # === BOOST VẬN TỐC KHI KHỞI ĐỘNG ===
         startup_boost = 1.0
-        if t_track < 5.0:
-            startup_boost = 1.0 + 0.5 * (1.0 - t_track / 5.0)
+        if trajectory_t < 5.0:
+            startup_boost = 1.0 + 0.5 * (1.0 - trajectory_t / 5.0)
 
         # === CLAMP V ===
         v_cmd = max(self.MIN_V, min(self.MAX_V * startup_boost, v_cmd))
@@ -530,9 +733,9 @@ class BSMCEight(Node):
         if self.debug_counter >= 20:
             self.debug_counter = 0
             # Tính số vòng đã đi
-            n_laps = t_track / self.T_period if self.T_period > 0 else 0
+            n_laps = trajectory_t / self.T_period if self.T_period > 0 else 0
             self.get_logger().info(
-                f"t={t_track:.1f}s lap={n_laps:.2f} | "
+                f"t={trajectory_t:.1f}s lap={n_laps:.2f} | "
                 f"ex={e_x:+.3f} ey={e_y:+.3f} eth={math.degrees(e_theta):+.1f}deg | "
                 f"v_cmd={v_cmd:.3f} w_cmd={w_cmd:.3f} "
                 f"(v={self.current_v:.3f} w={self.current_w:.3f}) | "

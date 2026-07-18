@@ -1,0 +1,83 @@
+Đúng là trong `camera.py` còn một phần viết riêng cho hình tròn, nhưng luồng đang chạy thực tế không hoàn toàn bị giới hạn ở hình tròn.
+
+Điểm quan trọng:
+
+- Hàm [`draw_circle_reference_overlay()`](E:\NCKH\Paper1-main\src\amr_control\amr_control\camera.py:540) chỉ sinh đường tròn bằng `circle_radius`, `sin()` và `cos()`.
+- Tuy nhiên hàm này hiện không được gọi ở đâu.
+- Phần đang được gọi là [`draw_trajectory_overlay()`](E:\NCKH\Paper1-main\src\amr_control\amr_control\camera.py:593), tại dòng 831.
+- Hàm này có thể vẽ quỹ đạo bất kỳ từ các điểm `/desired_trajectory`, nên về nguyên tắc đã dùng được cho hình số 8.
+
+Vấn đề thực tế nằm ở chế độ được `bsmc_eight.py` gửi:
+
+```python
+mode_msg.data = 'actual'
+```
+
+Ở [`bsmc_eight.py`](E:\NCKH\Paper1-main\src\amr_control\amr_control\bsmc_eight.py:450).
+
+Khi nhận `actual`, `camera.py` đi vào nhánh:
+
+```python
+if self.trajectory_mode == 'actual':
+    self.draw_actual_path_overlay(frame)
+    return
+```
+
+Nghĩa là camera chỉ vẽ lịch sử chuyển động thực tế của AprilTag, không vẽ quỹ đạo số 8 mong muốn.
+
+Gợi ý sửa tối thiểu
+
+Trong `bsmc_eight.py`, đổi chế độ xuất ra thành:
+
+```python
+mode_msg.data = 'history'
+```
+
+Khi đó:
+
+1. `bsmc_eight.py` liên tục gửi `(x_d, y_d, theta_d)`.
+2. [`trajectory_callback()`](E:\NCKH\Paper1-main\src\amr_control\amr_control\camera.py:430) lưu các điểm `(x_d, y_d)`.
+3. [`draw_trajectory_overlay()`](E:\NCKH\Paper1-main\src\amr_control\amr_control\camera.py:611) chuyển từng điểm sang pixel.
+4. Các điểm được nối lại thành hình số 8.
+
+Như vậy không cần đưa công thức số 8 vào `camera.py`.
+
+Một hạn chế cần lưu ý
+
+Chế độ `history` chỉ vẽ phần quỹ đạo đã được controller phát ra từ lúc bắt đầu đến hiện tại. Nó không hiện nguyên hình số 8 ngay lập tức.
+
+Nếu muốn camera hiển thị trước toàn bộ hình số 8, nên thiết kế tổng quát hơn:
+
+```python
+def draw_figure_eight_reference_overlay(self, frame):
+    A = self.figure_eight_amplitude
+
+    for i in range(N + 1):
+        u = 2.0 * math.pi * i / N
+
+        dx = A * math.sin(u)
+        dy = (A / 2.0) * math.sin(2.0 * u)
+
+        pixel = self.map_offset_to_pixel(
+            anchor_pixel,
+            px_per_meter,
+            dx,
+            dy,
+        )
+```
+
+Công thức này khớp với quỹ đạo trong [`bsmc_eight.py`](E:\NCKH\Paper1-main\src\amr_control\amr_control\bsmc_eight.py:240):
+
+```python
+x_local = A * sin(ωt)
+y_local = (A / 2) * sin(2ωt)
+```
+
+Nhưng cần cẩn thận về điểm neo: hình số 8 bắt đầu tại tâm `(x0, y0)`, trong khi hàm đường tròn hiện tại tính tâm từ vị trí robot và hướng tiếp tuyến. Với số 8, nên dùng vị trí robot ban đầu làm tâm trực tiếp, không dùng:
+
+```python
+center_dx = -radius * sin(theta_d)
+center_dy = radius * cos(theta_d)
+```
+
+Khuyến nghị của mình: trước tiên chỉ đổi `actual → history`. Cách này ít thay đổi nhất và `camera.py` đã hỗ trợ sẵn quỹ đạo số 8. Chỉ tạo riêng `draw_figure_eight_reference_overlay()` nếu bạn thật sự cần nhìn thấy toàn bộ đường tham chiếu ngay từ đầu. Không có file nào được chỉnh sửa.s

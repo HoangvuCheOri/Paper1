@@ -1,0 +1,13 @@
+{
+  "input": "/home/hoang/Paper1/paper_logs/square_2m/20260717_170321_square_BSMC_fusion_square_2m_final.csv",
+  "n_complete_edges": 4,
+  "straight_lateral_bias_m": 0.03203736074459642,
+  "straight_lateral_rmse_m": 0.03417009647983608,
+  "straight_lateral_max_abs_m": 0.0564725514310849,
+  "straight_waviness_rms_m": 0.009666238161916129,
+  "straight_lateral_peak_to_peak_max_m": 0.041032227478224756,
+  "straight_heading_rmse_deg": 1.8513028100760232,
+  "straight_cmd_w_rms_rad_s": 0.02134766750288592,
+  "overall_position_rmse_m": 0.034276123620841696,
+  "overall_heading_rmse_deg": 22.12471322293762
+}

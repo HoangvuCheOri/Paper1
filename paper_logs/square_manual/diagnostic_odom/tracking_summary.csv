@@ -1,0 +1,2 @@
+trajectory,controller,source,n_runs,rmse_ex_m_mean,rmse_ex_m_std,rmse_ey_m_mean,rmse_ey_m_std,rmse_etheta_rad_mean,rmse_etheta_rad_std,rmse_position_m_mean,rmse_position_m_std,mae_position_m_mean,mae_position_m_std,max_position_m_mean,max_position_m_std,convergence_time_s_mean,convergence_time_s_std
+square,BSMC,odom,1,0.019946942325661035,0.0,0.05733765103457492,0.0,0.2831909065812935,0.0,0.06068189260871138,0.0,0.0511249348049003,0.0,0.14216720252925588,0.0,5.04079008102417,0.0
