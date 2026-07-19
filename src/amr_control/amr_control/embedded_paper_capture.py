@@ -16,6 +16,7 @@ from pathlib import Path
 
 from geometry_msgs.msg import Point, Twist
 from nav_msgs.msg import Odometry
+from rcl_interfaces.msg import ParameterDescriptor
 from std_msgs.msg import Float32MultiArray
 
 
@@ -74,7 +75,14 @@ class EmbeddedPaperCapture:
         node.declare_parameter("paper_output_dir", default_output_dir)
         node.declare_parameter("paper_run_id", "")
         node.declare_parameter("paper_sample_rate", 25.0)
-        node.declare_parameter("paper_duration", float(default_duration))
+        # Dynamic typing lets ROS CLI users write either paper_duration:=0 or
+        # paper_duration:=0.0. Without it, Humble rejects the integer spelling
+        # before this class can convert the value to float.
+        node.declare_parameter(
+            "paper_duration",
+            float(default_duration),
+            ParameterDescriptor(dynamic_typing=True),
+        )
         node.declare_parameter("paper_camera_max_age", 0.30)
 
         self.enabled = bool(node.get_parameter("paper_capture").value)
@@ -83,6 +91,11 @@ class EmbeddedPaperCapture:
             return
 
         self.duration = float(node.get_parameter("paper_duration").value)
+        self.requested_laps = max(
+            1.0,
+            float(node.get_parameter("paper_laps").value)
+            if node.has_parameter("paper_laps") else 1.0,
+        )
         self.camera_max_age = max(
             0.01, float(node.get_parameter("paper_camera_max_age").value)
         )
@@ -128,7 +141,8 @@ class EmbeddedPaperCapture:
         duration_text = "manual Ctrl-C" if self.duration == 0.0 else f"{self.duration:.1f}s"
         node.get_logger().info(
             f"Paper capture is embedded in this node: run={self.run_id}, "
-            f"duration={duration_text}, csv={self.csv_path}"
+            f"laps={self.requested_laps:g}, duration={duration_text}, "
+            f"csv={self.csv_path}"
         )
 
     def _now(self):
@@ -242,11 +256,26 @@ class EmbeddedPaperCapture:
     def _check_stop(self):
         if self.stop_requested or self.duration <= 0.0:
             return
-        if self._now() - self.start_time < self.duration:
-            return
+        if self.trajectory == "square" and all(hasattr(self.node, name) for name in (
+            "path_progress", "lead_in_length", "loop_length"
+        )):
+            completed_laps = max(
+                0.0,
+                float(self.node.path_progress) - float(self.node.lead_in_length),
+            ) / max(float(self.node.loop_length), 1e-9)
+            if completed_laps + 1e-6 < self.requested_laps:
+                return
+            completion_text = f"Square path progress reached {completed_laps:.3f} laps"
+        else:
+            if self._now() - self.start_time < self.duration:
+                return
+            completion_text = (
+                f"Paper duration {self.duration:.1f}s completed "
+                f"for {self.requested_laps:g} laps"
+            )
         self.stop_requested = True
         self.node.get_logger().info(
-            f"Paper duration {self.duration:.1f}s complete; stopping robot and exporting assets."
+            completion_text + "; stopping robot and exporting assets."
         )
         self.node.cmd_pub.publish(Twist())
         # Raising from the executor callback unwinds rclpy.spin immediately;
@@ -291,17 +320,57 @@ class EmbeddedPaperCapture:
         camera_x, camera_y = array("camera_x"), array("camera_y")
         odom_x, odom_y = array("odom_x"), array("odom_y")
 
+        # The hardware figure-eight may be rigidly rotated so a robot placed
+        # at yaw=0 can leave the centre crossing without a pre-rotation.  For
+        # the paper, express every position source in the canonical,
+        # trajectory-aligned frame. This is a declared coordinate transform;
+        # raw CSV/world-frame values remain untouched.
+        figure_rotation_deg = 0.0
+        plot_desired_x, plot_desired_y = desired_x, desired_y
+        plot_camera_x, plot_camera_y = camera_x, camera_y
+        plot_odom_x, plot_odom_y = odom_x, odom_y
+        if self.trajectory == "eight":
+            figure_rotation_deg = -float(
+                getattr(self.node, "PATH_ROTATION_DEG", 0.0)
+            )
+            finite_desired = np.isfinite(desired_x) & np.isfinite(desired_y)
+            if finite_desired.any() and abs(figure_rotation_deg) > 1e-12:
+                center_x = 0.5 * (
+                    np.nanmin(desired_x[finite_desired])
+                    + np.nanmax(desired_x[finite_desired])
+                )
+                center_y = 0.5 * (
+                    np.nanmin(desired_y[finite_desired])
+                    + np.nanmax(desired_y[finite_desired])
+                )
+                angle = math.radians(figure_rotation_deg)
+                cosine, sine = math.cos(angle), math.sin(angle)
+
+                def rotate_xy(x_values, y_values):
+                    dx = x_values - center_x
+                    dy = y_values - center_y
+                    return (
+                        center_x + cosine * dx - sine * dy,
+                        center_y + sine * dx + cosine * dy,
+                    )
+
+                plot_desired_x, plot_desired_y = rotate_xy(desired_x, desired_y)
+                plot_camera_x, plot_camera_y = rotate_xy(camera_x, camera_y)
+                plot_odom_x, plot_odom_y = rotate_xy(odom_x, odom_y)
+
         outputs = [self.csv_path]
         fig, ax = plt.subplots(figsize=(3.5, 3.15), constrained_layout=True)
-        ax.plot(desired_x, desired_y, "--", color="#222222", lw=1.5, label="Reference")
-        ax.plot(odom_x, odom_y, color="#E69F00", lw=1.15, alpha=0.9, label="EKF")
-        valid_camera = np.isfinite(camera_x) & np.isfinite(camera_y)
-        ax.scatter(camera_x[valid_camera], camera_y[valid_camera], s=4, color="#0072B2",
+        ax.plot(plot_desired_x, plot_desired_y, "--", color="#222222", lw=1.5, label="Reference")
+        ax.plot(plot_odom_x, plot_odom_y, color="#E69F00", lw=1.15, alpha=0.9, label="EKF")
+        valid_camera = np.isfinite(plot_camera_x) & np.isfinite(plot_camera_y)
+        ax.scatter(plot_camera_x[valid_camera], plot_camera_y[valid_camera], s=4, color="#0072B2",
                    alpha=0.28, edgecolors="none", label="AprilTag")
-        valid_desired = np.flatnonzero(np.isfinite(desired_x) & np.isfinite(desired_y))
+        valid_desired = np.flatnonzero(
+            np.isfinite(plot_desired_x) & np.isfinite(plot_desired_y)
+        )
         if valid_desired.size:
             first = valid_desired[0]
-            ax.plot(desired_x[first], desired_y[first], marker="^", ms=6,
+            ax.plot(plot_desired_x[first], plot_desired_y[first], marker="^", ms=6,
                     color="#009E73", linestyle="none", label="Start")
         ax.set_xlabel("x (m)")
         ax.set_ylabel("y (m)")
@@ -351,7 +420,13 @@ class EmbeddedPaperCapture:
             "n_total": int(len(t)), "n_metric": int(metric_mask.sum()),
             "valid": bool(metric_mask.sum() >= 3),
             "camera_max_age_s": self.camera_max_age,
+            "requested_laps": self.requested_laps,
             "parameters": self._controller_parameters(),
+            "trajectory_figure_frame": (
+                "trajectory_aligned" if abs(figure_rotation_deg) > 1e-12
+                else "world"
+            ),
+            "trajectory_figure_rotation_deg": figure_rotation_deg,
         }
         if metric_mask.any():
             summary.update({
@@ -374,9 +449,12 @@ class EmbeddedPaperCapture:
                 + np.cos(desired_yaw) * dy_camera
             )
             valid_crossing = metric_mask & center & np.isfinite(lateral)
+            # Direction labels use the same trajectory-aligned frame as the
+            # figure. Lateral magnitude is invariant under this rigid rotation.
+            figure_yaw = desired_yaw + math.radians(figure_rotation_deg)
             directions = {
-                "left_to_right": valid_crossing & (np.cos(desired_yaw) > 0.0),
-                "right_to_left": valid_crossing & (np.cos(desired_yaw) < 0.0),
+                "left_to_right": valid_crossing & (np.cos(figure_yaw) > 0.0),
+                "right_to_left": valid_crossing & (np.cos(figure_yaw) < 0.0),
             }
             for direction, mask in directions.items():
                 if mask.any():

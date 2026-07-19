@@ -1,0 +1,30 @@
+{
+  "controller": "BSMC",
+  "trajectory": "square",
+  "run_id": "final_square_bsmc_3laps",
+  "csv": "/home/hoang/Paper1/paper_runs/final/20260719_183530_square_BSMC_final_square_bsmc_3laps.csv",
+  "n_total": 1538,
+  "n_metric": 1336,
+  "valid": true,
+  "camera_max_age_s": 0.3,
+  "requested_laps": 3.0,
+  "parameters": {
+    "k1": 0.8,
+    "k2_straight": 4.0,
+    "k3_straight": 7.0,
+    "ks1": 0.08,
+    "ks2": 0.1,
+    "phi1": 1.0,
+    "phi2": 1.5,
+    "side_length_m": 1.0,
+    "desired_speed_m_s": 0.1,
+    "max_v_m_s": 0.18,
+    "max_w_rad_s": 0.85
+  },
+  "trajectory_figure_frame": "world",
+  "trajectory_figure_rotation_deg": 0.0,
+  "camera_rmse_ex_m": 0.017046141157137297,
+  "camera_rmse_ey_m": 0.029054431559660133,
+  "camera_rmse_heading_deg": 30.766745899603993,
+  "camera_rmse_position_m": 0.03368576734474109
+}

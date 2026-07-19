@@ -79,7 +79,7 @@ class BSMCEight(Node):
         self.declare_parameter('center_k1_radius', 0.50)
         self.declare_parameter('center_k2', 18.0)
         self.declare_parameter('center_k2_radius', 0.65)
-        self.declare_parameter('center_k3', 2.0)
+        self.declare_parameter('center_k3', 1.0)
         self.declare_parameter('center_k3_radius', 0.65)
         self.declare_parameter('v_cmd_scale', 1.0)
 

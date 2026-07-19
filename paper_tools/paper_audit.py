@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
+from circle_sop import audit_circle_sop
 from paper_common import load_registry, read_csv_columns, repo_path, tracking_data, wrap_angle
 
 
@@ -74,6 +75,9 @@ def audit(registry: dict) -> tuple[list[str], list[str]]:
             warnings.append(f"link {link['label']}: no sequence numbers; loss is gap-estimated only")
         if not np.isfinite(robot_ms).any():
             warnings.append(f"link {link['label']}: no robot timestamps; one-way latency unavailable")
+    circle_errors, circle_warnings = audit_circle_sop(registry)
+    errors.extend(circle_errors)
+    warnings.extend(circle_warnings)
     return errors, warnings
 
 
@@ -100,4 +104,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

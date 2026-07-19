@@ -20,7 +20,7 @@ def test_one_metre_profile_is_complete():
     assert profile["center_k1_radius"] == 0.50
     assert profile["center_k2"] == 18.0
     assert profile["center_k2_radius"] == 0.65
-    assert profile["center_k3"] == 2.0
+    assert profile["center_k3"] == 1.0
     assert profile["center_k3_radius"] == 0.65
     assert profile["initial_align_time"] == 0.0
     assert profile["initial_align_timeout"] >= profile["initial_align_time"]

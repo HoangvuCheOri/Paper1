@@ -1,0 +1,16 @@
+\begin{table}[!t]
+\centering
+\caption{Tracking performance from raw AprilTag measurements. Values are single-run results. Circle and figure-eight metrics exclude the first 5 s of motion; square position RMSE uses the complete moving interval, whereas square path and heading RMSE use established straight-edge samples only.}
+\label{tab:tracking}
+\begin{tabular}{lrrrrr}
+\hline
+Trajectory & Method & $n$ & Position (cm) & Path (cm) & Heading (deg) \\
+\hline
+circle & Backstepping baseline & 1 & 3.49 & 2.88 & 2.13 \\
+circle & BSMC & 1 & 2.92 & 2.30 & 1.62 \\
+eight & BSMC final & 1 & 3.39 & 1.84 & 5.89 \\
+square & BSMC 1 m & 1 & 2.77 & 1.58 & 1.91 \\
+square & BSMC 2 m & 1 & 2.99 & 2.88 & 1.93 \\
+\hline
+\end{tabular}
+\end{table}

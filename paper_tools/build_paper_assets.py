@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from circle_sop import build_circle_sop_assets, configured as circle_sop_configured
 from paper_audit import audit, render
 from paper_common import load_registry
 from paper_figures import FIGURES
@@ -32,8 +33,10 @@ def main():
         function(registry, output / "figures")
         print(f"generated figure: {name}")
     build_tables(registry, output / "tables")
+    if circle_sop_configured(registry):
+        paths = build_circle_sop_assets(registry, output)
+        print(f"generated Circle SOP assets: {len(paths)} files")
 
 
 if __name__ == "__main__":
     main()
-

@@ -1,0 +1,11 @@
+{
+  "trajectory": "square",
+  "selection": "latest completed run for each controller",
+  "backstepping_run_id": "final_square_2m_2laps_bs_r01",
+  "bsmc_run_id": "final_square_2m_2laps_bsmc_r01",
+  "backstepping_csv": "/home/hoang/Paper1/paper_runs/final/square/20260719_200726_square_Backstepping_final_square_2m_2laps_bs_r01.csv",
+  "bsmc_csv": "/home/hoang/Paper1/paper_runs/final/square/20260719_201052_square_BSMC_final_square_2m_2laps_bsmc_r01.csv",
+  "camera_freshness_limit_s": 0.3,
+  "figure_frame": "trajectory-aligned for figure-eight; local start frame otherwise",
+  "edits": "declared rigid coordinate translation/rotation only; no smoothing"
+}

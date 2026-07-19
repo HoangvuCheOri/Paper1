@@ -45,7 +45,7 @@ def _setup_matplotlib():
     return plt
 
 
-def _local_arrays(rows):
+def _local_arrays(rows, figure_rotation_deg=0.0):
     import numpy as np
     keys = (
         "t", "ros_time", "desired_x", "desired_y", "desired_yaw",
@@ -84,6 +84,18 @@ def _local_arrays(rows):
         dy = values[f"{prefix}_y"] - y0
         values[f"{prefix}_x_local"] = cosine * dx + sine * dy
         values[f"{prefix}_y_local"] = -sine * dx + cosine * dy
+    if abs(float(figure_rotation_deg)) > 1e-12:
+        angle = math.radians(float(figure_rotation_deg))
+        frame_cosine, frame_sine = math.cos(angle), math.sin(angle)
+        for prefix in ("desired", "odom", "camera"):
+            x_values = values[f"{prefix}_x_local"].copy()
+            y_values = values[f"{prefix}_y_local"].copy()
+            values[f"{prefix}_x_local"] = (
+                frame_cosine * x_values - frame_sine * y_values
+            )
+            values[f"{prefix}_y_local"] = (
+                frame_sine * x_values + frame_cosine * y_values
+            )
     return values
 
 
@@ -122,10 +134,20 @@ def refresh_tracking_assets(root):
             continue
         baseline_run = max(baseline, key=lambda item: item["summary_path"])
         compensated_run = max(compensated, key=lambda item: item["summary_path"])
-        pair = {
-            "Backstepping": _local_arrays(_read_csv(baseline_run["csv"])),
-            "BSMC": _local_arrays(_read_csv(compensated_run["csv"])),
+        pair = {}
+        selected_runs = {
+            "Backstepping": baseline_run,
+            "BSMC": compensated_run,
         }
+        for controller, selected_run in selected_runs.items():
+            path_rotation = float(
+                selected_run.get("parameters", {}).get("path_rotation_deg", 0.0)
+            )
+            frame_rotation = -path_rotation if trajectory == "eight" else 0.0
+            pair[controller] = _local_arrays(
+                _read_csv(selected_run["csv"]),
+                figure_rotation_deg=frame_rotation,
+            )
 
         fig, ax = plt.subplots(figsize=(3.5, 3.15), constrained_layout=True)
         reference = pair["BSMC"]
@@ -204,7 +226,8 @@ def refresh_tracking_assets(root):
             "backstepping_csv": baseline_run["csv"],
             "bsmc_csv": compensated_run["csv"],
             "camera_freshness_limit_s": 0.30,
-            "edits": "coordinate translation/rotation only; no smoothing",
+            "figure_frame": "trajectory-aligned for figure-eight; local start frame otherwise",
+            "edits": "declared rigid coordinate translation/rotation only; no smoothing",
         }
         path = output / f"{trajectory}_comparison_provenance.json"
         path.write_text(json.dumps(provenance, indent=2), encoding="utf-8")

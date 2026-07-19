@@ -81,6 +81,16 @@ ros2 run amr_control backstepping_square
 
 Không chạy hai controller cùng lúc vì cả hai đều publish `/cmd_vel`.
 
+Chạy hữu hạn nhiều vòng trong một lệnh bằng `paper_laps`. Ví dụ ba vòng:
+
+```bash
+ros2 run amr_control bsmc_eight --ros-args -p paper_laps:=3.0 \
+  -p paper_run_id:=eight_bsmc_3laps
+```
+
+Circle và Eight dừng theo pha khép kín; Square dừng theo tiến độ quãng đường
+thực chiếu lên quỹ đạo, không theo ước lượng thời gian tại các góc.
+
 Với figure-eight, profile mặc định bắt đầu ngay tại điểm giao `(0, 0)` và xoay
 đường Lissajous `-45` độ trong hệ camera. Tiếp tuyến tại điểm giao vì vậy trùng
 với yaw `0` độ: controller tiến theo `+X` ngay, không quay căn chỉnh tại chỗ.
@@ -97,12 +107,13 @@ ros2 run amr_control bsmc_circle --ros-args \
   -p paper_output_dir:=/home/hoang/Paper1/paper_runs
 ```
 
-Đặt `paper_duration:=0` để chạy đến khi nhấn Ctrl-C:
+Đặt `paper_duration:=0.0` để chạy đến khi nhấn Ctrl-C (`0` cũng được chấp
+nhận bởi phiên bản hiện tại):
 
 ```bash
 ros2 run amr_control backstepping_circle --ros-args \
   -p paper_run_id:=circle_bs_r01 \
-  -p paper_duration:=0
+  -p paper_duration:=0.0
 ```
 
 Chọn square 1 m thay vì profile mặc định 2 m:

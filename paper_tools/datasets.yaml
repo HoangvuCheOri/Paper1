@@ -3,6 +3,34 @@ paper:
   nominal_period_ms: 50.0
   output_dpi: 600
 
+# Final Circle randomized paired-block experiment. Fill each list in block
+# order after collecting five independently restarted, three-lap runs per
+# controller. String CSV paths are sufficient; matching *_summary.json files
+# are discovered automatically.
+nominal_circle:
+  required_runs_per_controller: 5
+  laps_per_run: 3
+  transient_s: 5.0
+  camera_max_age_s: 0.30
+  message_freshness_s: 0.30
+  convergence_threshold_m: 0.05
+  convergence_hold_s: 1.0
+  backstepping:
+    - paper_runs/final/20260719_190855_circle_Backstepping_final_circle_bs_r01.csv
+    - paper_runs/final/20260719_191827_circle_Backstepping_final_circle_bs_r02.csv
+    - paper_runs/final/20260719_192143_circle_Backstepping_final_circle_bs_r03.csv
+    - paper_runs/final/20260719_193148_circle_Backstepping_final_circle_bs_r04.csv
+    # Fifth independent run was accidentally recorded with r04 in its file
+    # name. Keep the raw file untouched and correct only its provenance label.
+    - csv: paper_runs/final/20260719_193456_circle_Backstepping_final_circle_bs_r04.csv
+      run_id: final_circle_bs_r05_mislabeled_as_r04
+  bsmc:
+    - paper_runs/final/20260719_191205_circle_BSMC_final_circle_bsmc_r01.csv
+    - paper_runs/final/20260719_191520_circle_BSMC_final_circle_bsmc_r02.csv
+    - paper_runs/final/20260719_192509_circle_BSMC_final_circle_bsmc_r03.csv
+    - paper_runs/final/20260719_192841_circle_BSMC_final_circle_bsmc_r04.csv
+    - paper_runs/final/20260719_193802_circle_BSMC_final_circle_bsmc_r05.csv
+
 runs:
   circle_baseline:
     label: Backstepping baseline

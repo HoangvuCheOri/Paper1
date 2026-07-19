@@ -1,0 +1,30 @@
+{
+  "experimental_unit": "independently restarted hardware run",
+  "n_per_controller": 5,
+  "laps_per_run": 3,
+  "lap_independence": "laps are repeated measures, not independent n",
+  "representative_rule": "paired block minimizing normalized distance to both controller medians",
+  "representative_block_index_1_based": 1,
+  "representative_runs": {
+    "backstepping": "20260719_190855_circle_Backstepping_final_circle_bs_r01",
+    "bsmc": "20260719_191205_circle_BSMC_final_circle_bsmc_r01"
+  },
+  "registered_runs": {
+    "backstepping": [
+      "20260719_190855_circle_Backstepping_final_circle_bs_r01",
+      "20260719_191827_circle_Backstepping_final_circle_bs_r02",
+      "20260719_192143_circle_Backstepping_final_circle_bs_r03",
+      "20260719_193148_circle_Backstepping_final_circle_bs_r04",
+      "final_circle_bs_r05_mislabeled_as_r04"
+    ],
+    "bsmc": [
+      "20260719_191205_circle_BSMC_final_circle_bsmc_r01",
+      "20260719_191520_circle_BSMC_final_circle_bsmc_r02",
+      "20260719_192509_circle_BSMC_final_circle_bsmc_r03",
+      "20260719_192841_circle_BSMC_final_circle_bsmc_r04",
+      "20260719_193802_circle_BSMC_final_circle_bsmc_r05"
+    ]
+  },
+  "figure_scope": "Fig. 2 last complete lap; Fig. 4 all laps with dotted lap boundaries",
+  "processing": "raw AprilTag errors; rigid local-frame transform only; no smoothing"
+}

@@ -1,0 +1,30 @@
+{
+  "controller": "BSMC",
+  "trajectory": "circle",
+  "run_id": "final_circle_bsmc_r01",
+  "csv": "/home/hoang/Paper1/paper_runs/20260719_181813_circle_BSMC_final_circle_bsmc_r01.csv",
+  "n_total": 1580,
+  "n_metric": 1378,
+  "valid": true,
+  "camera_max_age_s": 0.3,
+  "parameters": {
+    "k1": 1.163,
+    "k2": 4.499,
+    "k3": 3.3,
+    "ks1": 0.024,
+    "ks2": 0.05,
+    "phi1": 1.0,
+    "phi2": 1.5,
+    "radius_m": 1.0,
+    "angular_speed_rad_s": 0.108,
+    "desired_speed_m_s": 0.108,
+    "max_v_m_s": 0.18,
+    "max_w_rad_s": 0.85
+  },
+  "trajectory_figure_frame": "world",
+  "trajectory_figure_rotation_deg": 0.0,
+  "camera_rmse_ex_m": 0.014885763192159094,
+  "camera_rmse_ey_m": 0.024045530225584016,
+  "camera_rmse_heading_deg": 1.6746234206273425,
+  "camera_rmse_position_m": 0.028280266435140127
+}

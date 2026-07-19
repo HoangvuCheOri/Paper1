@@ -52,3 +52,16 @@ MPLCONFIGDIR=/tmp/bsmc-mpl python3 paper_tools/paper_figures.py \
 Generated assets should be reviewed at final LaTeX size before submission.
 The source experiment files remain untouched.
 
+## Final Circle 5×2 SOP
+
+The optional `nominal_circle` registry section supports five paired,
+independently restarted runs per controller, with three laps per run. When its
+two lists are populated, the normal audit/build commands additionally:
+
+- verify controller identity, parameter parity, camera freshness, and lap count;
+- compute run-level mean ± sample SD (`n=5`, never `n=15` laps);
+- replace Figures 2/4 with the registered repeat-aware versions;
+- export `table1_parameters`, `table4_tracking_performance`, per-lap drift
+  metrics, and a machine-readable provenance record.
+
+See `docs/circle_experiment_sop.md` for the lab procedure and YAML template.

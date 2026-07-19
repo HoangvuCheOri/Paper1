@@ -1,0 +1,17 @@
+\begin{table}[!t]
+\centering
+\caption{ESP-NOW inter-arrival statistics. Loss is estimated from timing gaps because packet sequence numbers were unavailable.}
+\label{tab:espnow}
+\begin{tabular}{lrrrrr}
+\hline
+Condition & Packets & Median (ms) & P95 (ms) & P99 (ms) & Gap loss (\%) \\
+\hline
+Static 5 m & 1199 & 49.97 & 64.89 & 85.07 & 2.12 \\
+Moving 5 m & 1199 & 50.01 & 62.22 & 87.78 & 2.68 \\
+Static 10 m & 1200 & 49.96 & 71.69 & 98.51 & 3.92 \\
+Moving 10 m & 1200 & 50.00 & 68.63 & 115.75 & 4.69 \\
+Static 20 m & 1200 & 50.08 & 68.88 & 106.71 & 3.85 \\
+Moving 20 m & 1199 & 50.04 & 67.46 & 102.68 & 3.46 \\
+\hline
+\end{tabular}
+\end{table}

@@ -1,0 +1,13 @@
+\begin{table}[!t]
+\centering
+\caption{Circle tracking performance across five independent hardware runs (mean $\pm$ sample standard deviation).}
+\label{tab:tracking}
+\begin{tabular}{lrrrrrr}
+\hline
+Controller & $n$ & RMSE $e_x$ (m) & RMSE $e_y$ (m) & RMSE $e_\theta$ (rad) & Max. $e_p$ (m) & $T_{conv}$ (s) \\
+\hline
+Backstepping & 5 & 0.016 $\pm$ 0.000 & 0.025 $\pm$ 0.000 & 0.031 $\pm$ 0.001 & 0.041 $\pm$ 0.002 & 0.000 $\pm$ 0.000 \\
+Compensated BSMC & 5 & 0.015 $\pm$ 0.001 & 0.026 $\pm$ 0.001 & 0.031 $\pm$ 0.002 & 0.040 $\pm$ 0.003 & 0.000 $\pm$ 0.000 \\
+\hline
+\end{tabular}
+\end{table}

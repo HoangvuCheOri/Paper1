@@ -46,6 +46,10 @@ class BSMCCircle(Node):
         self.odom_topic = self.get_parameter('odom_topic').value
         self.R = float(self.get_parameter('radius').value)
         self.W = float(self.get_parameter('angular_speed').value)
+        # The position reference integrates a 2 s linear speed ramp. A full
+        # geometric revolution therefore needs T_period + T_ramp/2 seconds,
+        # not just T_period seconds.
+        self.TRAJECTORY_RAMP_TIME = 2.0
 
         control_frequency = max(1.0, float(self.get_parameter('control_frequency').value))
         self.timer_period = 1.0 / control_frequency
@@ -229,7 +233,7 @@ class BSMCCircle(Node):
         self.last_odom_time = now_s
 
     def generate_desired_trajectory(self, t):
-        T_ramp = 2.0
+        T_ramp = self.TRAJECTORY_RAMP_TIME
         if t < T_ramp:
             s = self.VD * (t ** 2) / (2.0 * T_ramp)
             v_d = self.VD * t / T_ramp

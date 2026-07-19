@@ -39,10 +39,12 @@ EIGHT_PROFILES = {
         # At the right-to-left crossing, k2*e_y (+0.0315 rad/s) and
         # k3*sin(e_theta) (-0.0364 rad/s) cancelled. Lower k3 only near the
         # centre so the robot may steer across the residual parallel offset.
-        # With k3=3.5 the right-to-left centre terms still cancelled:
-        # lateral +0.0221 versus heading -0.0274 rad/s. k3=2.0 changes the
-        # net correction toward the path while leaving outer-lobe k3=7.
-        "center_k3": 2.0,
+        # With k3=3.5 the right-to-left centre terms still cancelled. Reducing
+        # it to 2.0 improved that branch, but run 20260719_170630 still showed
+        # ey=+0.96 cm against e_theta=-3.51 deg at the crossing, leaving only
+        # about 0.005 rad/s net steering. Use 1.0 to favour lateral recovery
+        # near the centre while leaving the outer-lobe k3=7 unchanged.
+        "center_k3": 1.0,
         "center_k3_radius": 0.65,
         "k1": 0.2205844943,
         "k2": 6.5,

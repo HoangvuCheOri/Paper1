@@ -1,0 +1,6 @@
+trajectory,method,n,position_rmse_cm,path_rmse_cm,heading_rmse_deg,scope
+circle,Backstepping baseline,1,3.49,2.88,2.13,steady-state after 5 s transient
+circle,BSMC,1,2.92,2.30,1.62,steady-state after 5 s transient
+eight,BSMC final,1,3.39,1.84,5.89,steady-state after 5 s transient
+square,BSMC 1 m,1,2.77,1.58,1.91,heading/path on established straight edges
+square,BSMC 2 m,1,2.99,2.88,1.93,heading/path on established straight edges

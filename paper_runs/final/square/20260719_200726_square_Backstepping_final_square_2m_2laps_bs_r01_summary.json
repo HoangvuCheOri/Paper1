@@ -1,0 +1,30 @@
+{
+  "controller": "Backstepping",
+  "trajectory": "square",
+  "run_id": "final_square_2m_2laps_bs_r01",
+  "csv": "/home/hoang/Paper1/paper_runs/final/square/20260719_200726_square_Backstepping_final_square_2m_2laps_bs_r01.csv",
+  "n_total": 4980,
+  "n_metric": 4363,
+  "valid": true,
+  "camera_max_age_s": 0.3,
+  "requested_laps": 2.0,
+  "parameters": {
+    "k1": 0.8,
+    "k2_straight": 6.0,
+    "k3_straight": 7.0,
+    "ks1": 0.0,
+    "ks2": 0.0,
+    "phi1": 1.0,
+    "phi2": 1.5,
+    "side_length_m": 2.0,
+    "desired_speed_m_s": 0.1,
+    "max_v_m_s": 0.18,
+    "max_w_rad_s": 0.85
+  },
+  "trajectory_figure_frame": "world",
+  "trajectory_figure_rotation_deg": 0.0,
+  "camera_rmse_ex_m": 0.010967719849005044,
+  "camera_rmse_ey_m": 0.030252582038613512,
+  "camera_rmse_heading_deg": 22.262313050194035,
+  "camera_rmse_position_m": 0.03217933496344043
+}
