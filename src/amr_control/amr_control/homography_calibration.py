@@ -76,16 +76,27 @@ class HomographyCalibrator(Node):
         self.declare_parameter('display_resize', False)
         self.declare_parameter('display_width', 1280)
         self.declare_parameter('display_height', 720)
+        self.declare_parameter('undistort_points', True)
+        self.declare_parameter('ransac_threshold_m', 0.03)
 
         self.output_yaml = self.get_parameter('output_yaml').value
         self.display_resize = bool(self.get_parameter('display_resize').value)
         self.display_width = int(self.get_parameter('display_width').value)
         self.display_height = int(self.get_parameter('display_height').value)
+        self.undistort_points = bool(self.get_parameter('undistort_points').value)
+        self.ransac_threshold_m = max(
+            0.001, float(self.get_parameter('ransac_threshold_m').value)
+        )
         self.calibration_points = [list(pt) for pt in IMAGE_POINTS]
         self.real_world_points = [list(pt) for pt in WORLD_POINTS]
         self.calibration_mode = False
         self.waiting_for_real_coords = False
         self.current_pixel = None
+        self.base_image_width = 1280
+        self.base_image_height = 720
+        self.frame_width = None
+        self.frame_height = None
+        self.default_points_scaled = False
 
         # Camera parameters
         os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay"
@@ -125,9 +136,56 @@ class HomographyCalibrator(Node):
         self.get_logger().info("  'c' - Toggle calibration mode")
         self.get_logger().info("  's' - Save homography to YAML")
         self.get_logger().info("  'r' - Reset calibration points")
+        self.get_logger().info("  'x' - Clear all points for a fresh calibration")
         self.get_logger().info("  'q' - Quit")
         self.get_logger().info("=" * 50)
         self.get_logger().info(f"Output file: {self.output_yaml}")
+        self.get_logger().info(
+            f"Homography pixel domain: "
+            f"{'undistorted' if self.undistort_points else 'distorted (legacy)'}, "
+            f"RANSAC threshold={self.ransac_threshold_m:.3f} m"
+        )
+
+    def scaled_camera_matrix(self, width, height):
+        matrix = self.camera_matrix.copy()
+        scale_x = float(width) / float(self.base_image_width)
+        scale_y = float(height) / float(self.base_image_height)
+        matrix[0, 0] *= scale_x
+        matrix[1, 1] *= scale_y
+        matrix[0, 2] *= scale_x
+        matrix[1, 2] *= scale_y
+        return matrix
+
+    def configure_frame_geometry(self, width, height):
+        """Put preset 1280x720 points into the actual raw-frame resolution."""
+        if self.default_points_scaled:
+            return
+        self.frame_width = int(width)
+        self.frame_height = int(height)
+        scale_x = float(width) / float(self.base_image_width)
+        scale_y = float(height) / float(self.base_image_height)
+        self.calibration_points = [
+            [float(point[0]) * scale_x, float(point[1]) * scale_y]
+            for point in self.calibration_points
+        ]
+        self.default_points_scaled = True
+        self.get_logger().info(
+            f"Calibration frame size: {self.frame_width}x{self.frame_height}"
+        )
+
+    def points_for_homography(self, raw_points):
+        points = np.asarray(raw_points, dtype=np.float32)
+        if not self.undistort_points:
+            return points
+        if self.frame_width is None or self.frame_height is None:
+            raise RuntimeError("camera frame geometry is not initialized")
+        matrix = self.scaled_camera_matrix(self.frame_width, self.frame_height)
+        return cv2.undistortPoints(
+            points.reshape(-1, 1, 2),
+            matrix,
+            self.dist_coeffs,
+            P=matrix,
+        ).reshape(-1, 2)
 
     def mouse_callback(self, event, x, y, flags, param):
         if event != cv2.EVENT_LBUTTONDOWN:
@@ -137,9 +195,20 @@ class HomographyCalibrator(Node):
             self.get_logger().info("Enable calibration mode with 'c' first")
             return
 
-        self.calibration_points.append([float(x), float(y)])
+        raw_x = float(x)
+        raw_y = float(y)
+        if (
+            self.display_resize
+            and self.frame_width is not None
+            and self.frame_height is not None
+        ):
+            raw_x *= float(self.frame_width) / max(float(self.display_width), 1.0)
+            raw_y *= float(self.frame_height) / max(float(self.display_height), 1.0)
+
+        self.calibration_points.append([raw_x, raw_y])
         self.get_logger().info(
-            f"Added point {len(self.calibration_points)}: pixel=({x}, {y})"
+            f"Added point {len(self.calibration_points)}: "
+            f"raw_pixel=({raw_x:.1f}, {raw_y:.1f})"
         )
 
         try:
@@ -155,18 +224,41 @@ class HomographyCalibrator(Node):
         if len(self.calibration_points) < 4 or len(self.real_world_points) < 4:
             self.get_logger().error("Need at least 4 pixel and 4 real-world points")
             return
+        if len(self.calibration_points) != len(self.real_world_points):
+            self.get_logger().error(
+                "Pixel/world point counts differ: "
+                f"{len(self.calibration_points)} != {len(self.real_world_points)}"
+            )
+            return
 
-        src = np.array(self.calibration_points, dtype=np.float32)
+        src_raw = np.array(self.calibration_points, dtype=np.float32)
         dst = np.array(self.real_world_points, dtype=np.float32)
+        try:
+            src = self.points_for_homography(src_raw)
+        except RuntimeError as exc:
+            self.get_logger().error(str(exc))
+            return
 
-        H, mask = cv2.findHomography(src, dst, cv2.RANSAC, 5.0)
+        H, mask = cv2.findHomography(
+            src,
+            dst,
+            cv2.RANSAC,
+            self.ransac_threshold_m,
+        )
         if H is None:
             self.get_logger().error("Homography computation failed")
             return
             
         H_inv = np.linalg.inv(H)
 
-        # Compute reprojection error in pixels
+        # Report both the scientifically relevant floor error and inverse
+        # reprojection error in the same pixel domain used to fit H.
+        dst_projected = cv2.perspectiveTransform(
+            src.reshape(-1, 1, 2), H
+        ).reshape(-1, 2)
+        errors_m = np.linalg.norm(dst_projected - dst, axis=1)
+        rms_error_m = float(np.sqrt(np.mean(np.square(errors_m))))
+
         dst_h = np.hstack([dst, np.ones((len(dst), 1))])
         src_proj_h = (H_inv @ dst_h.T).T
         src_proj = src_proj_h[:, :2] / src_proj_h[:, 2:]
@@ -174,12 +266,30 @@ class HomographyCalibrator(Node):
         errors_px = np.linalg.norm(src - src_proj, axis=1)
         mean_error_px = np.mean(errors_px)
         
-        self.get_logger().info(f"Mean reprojection error: {mean_error_px:.2f} px")
+        self.get_logger().info(
+            f"Floor error: mean={100.0 * float(np.mean(errors_m)):.2f} cm, "
+            f"RMS={100.0 * rms_error_m:.2f} cm, "
+            f"max={100.0 * float(np.max(errors_m)):.2f} cm"
+        )
+        self.get_logger().info(f"Mean inverse reprojection error: {mean_error_px:.2f} px")
         if mean_error_px > 5.0:
             self.get_logger().warn("Warning: Mean reprojection error is > 5px. Calibration might be inaccurate.")
 
         data = {
-            'src_points': self.calibration_points,
+            'pixel_domain': 'undistorted' if self.undistort_points else 'distorted',
+            'image_width': int(self.frame_width),
+            'image_height': int(self.frame_height),
+            'ransac_threshold_m': float(self.ransac_threshold_m),
+            'mean_floor_error_m': float(np.mean(errors_m)),
+            'rms_floor_error_m': rms_error_m,
+            'max_floor_error_m': float(np.max(errors_m)),
+            'camera_model': 'opencv_radtan',
+            'camera_matrix': self.scaled_camera_matrix(
+                self.frame_width, self.frame_height
+            ).tolist(),
+            'dist_coeffs': self.dist_coeffs.tolist(),
+            'src_points': src_raw.tolist(),
+            'src_points_homography_domain': src.tolist(),
             'dst_points': self.real_world_points,
             'homography_matrix': H.tolist(),
             'homography_inv_matrix': H_inv.tolist(),
@@ -238,6 +348,7 @@ class HomographyCalibrator(Node):
                 continue
 
             h_in, w_in = frame.shape[:2]
+            self.configure_frame_geometry(w_in, h_in)
             scale_x = w_in / 1280.0
             scale_y = h_in / 720.0
 
@@ -295,7 +406,7 @@ class HomographyCalibrator(Node):
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, mode_color, 1)
 
             # Instructions
-            cv2.putText(display, "c:Calibrate  s:Save  r:Reset  q:Quit",
+            cv2.putText(display, "c:Calibrate  s:Save  r:Reset  x:Clear  q:Quit",
                        (10, display.shape[0]-20),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
@@ -319,9 +430,21 @@ class HomographyCalibrator(Node):
             elif key == ord('s'):
                 self.compute_and_save_homography()
             elif key == ord('r'):
-                self.calibration_points = [list(pt) for pt in IMAGE_POINTS]
+                scale_x = float(self.frame_width) / float(self.base_image_width)
+                scale_y = float(self.frame_height) / float(self.base_image_height)
+                self.calibration_points = [
+                    [float(pt[0]) * scale_x, float(pt[1]) * scale_y]
+                    for pt in IMAGE_POINTS
+                ]
                 self.real_world_points = [list(pt) for pt in WORLD_POINTS]
                 self.get_logger().info("Reset calibration points to defaults")
+            elif key == ord('x'):
+                self.calibration_points = []
+                self.real_world_points = []
+                self.get_logger().info(
+                    "Cleared all calibration points; enable calibration mode "
+                    "and add at least four measured correspondences."
+                )
 
         cv2.destroyAllWindows()
 

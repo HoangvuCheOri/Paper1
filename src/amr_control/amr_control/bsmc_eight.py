@@ -22,9 +22,10 @@ class BSMCEight(Node):
         A = amplitude (bán kính mỗi nửa vòng, tương đương 'radius')
         ω = tốc độ góc (angular_speed)
 
-    Tâm hình số 8 nằm tại vị trí ban đầu (x0, y0) của robot.
-    Reference giữ nguyên hình học; heading feedback được đưa vào từ từ lúc đầu
-    để xe yaw=0 chạy ngay mà không tạo cú đảo lái lớn.
+    Profile phần cứng bắt đầu tại điểm giao của số 8 và xoay quỹ đạo -45 deg.
+    Vì tiếp tuyến Lissajous gốc tại điểm giao là +45 deg, phép xoay này làm
+    heading mong muốn ban đầu bằng 0 deg. Robot đặt ở (0, 0, 0) vì vậy chạy
+    thẳng theo +X ngay, không quay tại chỗ và không dịch điểm bắt đầu khỏi tâm.
     """
 
     def __init__(self):
@@ -54,16 +55,20 @@ class BSMCEight(Node):
         self.declare_parameter('min_v', 0.0)
         self.declare_parameter('invert_ey', False)
         self.declare_parameter('yaw_bias_gain', 0.0)
-        # Absolute rotation in the odometry/camera world frame. Zero keeps
-        # the long axis of the figure-8 horizontal even when initial yaw is 0.
-        self.declare_parameter('path_rotation_deg', 0.0)
-        self.declare_parameter('entry_heading_blend_time', 2.0)
+        # Rotate the standard Lissajous by -45 deg so its centre-crossing
+        # tangent is aligned with a robot placed at yaw=0.
+        self.declare_parameter('path_rotation_deg', -45.0)
+        self.declare_parameter('start_phase_deg', 0.0)
+        self.declare_parameter('entry_heading_blend_time', 0.0)
+        # Operator-selected rolling start: do not rotate in place. For a clean
+        # paper run, physically place the robot near the 45-degree tangent.
         self.declare_parameter('initial_align_time', 0.0)
         self.declare_parameter('initial_align_kp', 1.2)
         self.declare_parameter('initial_align_max_w', 0.35)
         self.declare_parameter('initial_align_tolerance_deg', 3.0)
         self.declare_parameter('initial_align_hold_time', 0.30)
         self.declare_parameter('initial_align_timeout', 12.0)
+        self.declare_parameter('initial_align_duration_estimate', 8.0)
         self.declare_parameter('w_feedforward_scale', 0.80)
         self.declare_parameter('w_feedforward_scale_negative', 0.55)
         self.declare_parameter('w_feedforward_scale_positive', 0.80)
@@ -72,6 +77,10 @@ class BSMCEight(Node):
         self.declare_parameter('feedback_speed_floor', 0.05)
         self.declare_parameter('center_k1', 1.5)
         self.declare_parameter('center_k1_radius', 0.50)
+        self.declare_parameter('center_k2', 18.0)
+        self.declare_parameter('center_k2_radius', 0.65)
+        self.declare_parameter('center_k3', 2.0)
+        self.declare_parameter('center_k3_radius', 0.65)
         self.declare_parameter('v_cmd_scale', 1.0)
 
         self.odom_topic = self.get_parameter('odom_topic').value
@@ -101,6 +110,10 @@ class BSMCEight(Node):
         self.PATH_ROTATION_DEG = float(
             self.get_parameter('path_rotation_deg').value
         )
+        self.START_PHASE_DEG = float(
+            self.get_parameter('start_phase_deg').value
+        )
+        self.START_PHASE = math.radians(self.START_PHASE_DEG)
         self.ENTRY_HEADING_BLEND_TIME = max(
             0.0, float(self.get_parameter('entry_heading_blend_time').value)
         )
@@ -122,6 +135,11 @@ class BSMCEight(Node):
         self.INITIAL_ALIGN_TIMEOUT = max(
             self.INITIAL_ALIGN_TIME,
             float(self.get_parameter('initial_align_timeout').value),
+        )
+        self.INITIAL_ALIGN_DURATION_ESTIMATE = max(
+            0.0, float(
+                self.get_parameter('initial_align_duration_estimate').value
+            )
         )
         self.W_FEEDFORWARD_SCALE = float(
             self.get_parameter('w_feedforward_scale').value
@@ -150,6 +168,16 @@ class BSMCEight(Node):
         self.CENTER_K1_RADIUS = max(
             0.01, float(self.get_parameter('center_k1_radius').value)
         )
+        center_k2 = float(self.get_parameter('center_k2').value)
+        self.CENTER_K2 = self.k2 if center_k2 < 0.0 else center_k2
+        self.CENTER_K2_RADIUS = max(
+            0.01, float(self.get_parameter('center_k2_radius').value)
+        )
+        center_k3 = float(self.get_parameter('center_k3').value)
+        self.CENTER_K3 = self.k3 if center_k3 < 0.0 else center_k3
+        self.CENTER_K3_RADIUS = max(
+            0.01, float(self.get_parameter('center_k3_radius').value)
+        )
         self.V_CMD_SCALE = max(
             0.5, min(1.5, float(self.get_parameter('v_cmd_scale').value))
         )
@@ -158,9 +186,11 @@ class BSMCEight(Node):
             self.get_logger().warn("Invalid amplitude <= 0. Using amplitude=0.5m.")
             self.A = 0.5
 
-        # Tính vận tốc tối đa trên quỹ đạo hình số 8
+        # Tính vận tốc tối đa trên quỹ đạo hình số 8. Giá trị này không đổi
+        # khi chỉ dịch pha bắt đầu.
         # dx/dt = A*ω*cos(ωt), dy/dt = A*ω*cos(2ωt)
-        # Vmax xảy ra tại t=0: v = A*ω*sqrt(cos²(0) + cos²(0)) = A*ω*sqrt(2)
+        # Vmax toàn quỹ đạo là A*ω*sqrt(2), không nhất thiết nằm tại thời điểm
+        # bắt đầu khi start_phase_deg khác 0.
         self.V_MAX_TRAJECTORY = self.A * self.W * math.sqrt(2.0)
         VD_max_usable = self.MAX_V * 0.60
         if self.V_MAX_TRAJECTORY > VD_max_usable:
@@ -245,6 +275,7 @@ class BSMCEight(Node):
         self.get_logger().info(
             f"EKF BSMC Figure-8 started: odom_topic={self.odom_topic}, "
             f"A={self.A:.2f}m, W={self.W:.2f}rad/s, "
+            f"start_phase={self.START_PHASE_DEG:.1f}deg, "
             f"trajectory_ramp={self.TRAJECTORY_RAMP_TIME:.1f}s, "
             f"entry_heading_blend={self.ENTRY_HEADING_BLEND_TIME:.1f}s, "
             f"v_max_traj={self.V_MAX_TRAJECTORY:.3f}m/s, "
@@ -362,33 +393,41 @@ class BSMCEight(Node):
             phase_rate = W
             phase_accel = 0.0
 
-        x_local = A * math.sin(phase)
-        y_local = (A / 2.0) * math.sin(2.0 * phase)
+        # Start at a configurable point on the same closed curve. Subtracting
+        # that point keeps the initial desired position exactly at (x0, y0),
+        # rather than moving or rotating the robot before tracking starts.
+        curve_phase = self.START_PHASE + phase
+        start_x_local = A * math.sin(self.START_PHASE)
+        start_y_local = (A / 2.0) * math.sin(2.0 * self.START_PHASE)
+        x_local = A * math.sin(curve_phase) - start_x_local
+        y_local = (A / 2.0) * math.sin(2.0 * curve_phase) - start_y_local
 
         # Đạo hàm bậc 1 (vận tốc)
-        dx_dt = A * math.cos(phase) * phase_rate
-        dy_dt = A * math.cos(2.0 * phase) * phase_rate
+        dx_dt = A * math.cos(curve_phase) * phase_rate
+        dy_dt = A * math.cos(2.0 * curve_phase) * phase_rate
 
         # Đạo hàm bậc 2 (gia tốc) — cần cho tính w_d
         d2x_dt2 = A * (
-            -math.sin(phase) * phase_rate**2
-            + math.cos(phase) * phase_accel
+            -math.sin(curve_phase) * phase_rate**2
+            + math.cos(curve_phase) * phase_accel
         )
         d2y_dt2 = A * (
-            -2.0 * math.sin(2.0 * phase) * phase_rate**2
-            + math.cos(2.0 * phase) * phase_accel
+            -2.0 * math.sin(2.0 * curve_phase) * phase_rate**2
+            + math.cos(2.0 * curve_phase) * phase_accel
         )
 
         # Vận tốc tuyến tính
         v_d = math.sqrt(dx_dt**2 + dy_dt**2)
 
-        # Heading desired. At zero speed use the initial tangent explicitly;
-        # atan2(0, 0) would otherwise create a one-sample heading discontinuity.
+        # Heading desired. At zero speed use the tangent of the selected start
+        # phase explicitly; atan2(0, 0) would create a one-sample jump.
         theta_local = (
             math.atan2(dy_dt, dx_dt)
-            if v_d > 1e-9 else math.pi / 4.0
+            if v_d > 1e-9 else math.atan2(
+                math.cos(2.0 * self.START_PHASE),
+                math.cos(self.START_PHASE),
+            )
         )
-
         # Vận tốc góc (từ curvature): w = (dx*d2y - dy*d2x) / v^2
         v_sq = v_d**2
         if v_sq > 1e-12:
@@ -406,6 +445,18 @@ class BSMCEight(Node):
         theta_d = self.normalize_angle(path_rotation + theta_local)
 
         return x_d, y_d, theta_d, v_d, w_d
+
+    def path_center(self):
+        """Return the geometric centre after phase translation and rotation."""
+        path_rotation = math.radians(self.PATH_ROTATION_DEG)
+        cos0 = math.cos(path_rotation)
+        sin0 = math.sin(path_rotation)
+        start_x = self.A * math.sin(self.START_PHASE)
+        start_y = (self.A / 2.0) * math.sin(2.0 * self.START_PHASE)
+        return (
+            self.x0 - cos0 * start_x + sin0 * start_y,
+            self.y0 - sin0 * start_x - cos0 * start_y,
+        )
 
     def _check_ekf_freshness(self, now_s):
         """Kiểm tra EKF còn mới không, nếu trễ > 2 chu kỳ thì dùng feedforward."""
@@ -455,6 +506,25 @@ class BSMCEight(Node):
                 f"theta0={math.degrees(self.theta0):.1f} deg, "
                 f"sample_spread_xy={float(np.std(x_arr)):.4f}m"
             )
+            if self.INITIAL_ALIGN_TIME <= 0.0:
+                initial_tangent = self.normalize_angle(
+                    math.radians(self.PATH_ROTATION_DEG)
+                    + math.atan2(
+                        math.cos(2.0 * self.START_PHASE),
+                        math.cos(self.START_PHASE),
+                    )
+                )
+                initial_heading_error = self.normalize_angle(
+                    initial_tangent - self.current_theta
+                )
+                if abs(initial_heading_error) > math.radians(10.0):
+                    self.get_logger().warn(
+                        "Rolling start enabled with initial heading mismatch "
+                        f"{math.degrees(initial_heading_error):+.1f} deg. "
+                        "The controller will move immediately, but a clean "
+                        "figure-eight start requires placing the robot near "
+                        f"{math.degrees(initial_tangent):.1f} deg before launch."
+                    )
 
             # Giải phóng bộ nhớ
             self.settle_samples_x = []
@@ -532,10 +602,14 @@ class BSMCEight(Node):
             - self.STARTUP_DELAY - self.SETTLE_TIME
         )
 
-        # Optional alignment follows the standard centre-crossing tangent.
+        # Optional alignment follows the tangent at the selected start phase.
         if not self.initial_alignment_complete:
             target_heading = self.normalize_angle(
-                math.radians(self.PATH_ROTATION_DEG) + math.pi / 4.0
+                math.radians(self.PATH_ROTATION_DEG)
+                + math.atan2(
+                    math.cos(2.0 * self.START_PHASE),
+                    math.cos(self.START_PHASE),
+                )
             )
             heading_error = self.normalize_angle(
                 target_heading - self.current_theta
@@ -570,10 +644,17 @@ class BSMCEight(Node):
                     t_track >= self.INITIAL_ALIGN_TIME
                     and held >= self.INITIAL_ALIGN_HOLD_TIME
                 ):
+                    # Rotation about the wheel axle moves an offset AprilTag
+                    # and can also shift the EKF position estimate. Start the
+                    # geometric path at the post-alignment pose, not at the
+                    # stale pre-rotation anchor (5.57 cm shift in hardware).
+                    self.x0 = self.current_x
+                    self.y0 = self.current_y
                     self.initial_alignment_complete = True
                     self.trajectory_start_track_time = t_track
                     self.get_logger().info(
-                        "Initial heading aligned; starting figure-8 phase."
+                        "Initial heading aligned; re-anchored path at "
+                        f"({self.x0:.4f}, {self.y0:.4f}) and starting figure-8 phase."
                     )
             else:
                 self.initial_alignment_in_tolerance_since = None
@@ -660,12 +741,18 @@ class BSMCEight(Node):
         sat_s1 = self.sat(s1 / self.phi1)
         sat_s2 = self.sat(s2 / self.phi2)
 
+        # Smooth, centre-local gains correct phase and lateral offset on the
+        # zero-curvature crossing without increasing gains on the outer lobes.
+        path_center_x, path_center_y = self.path_center()
+        distance_from_center = math.hypot(
+            x_d - path_center_x, y_d - path_center_y
+        )
+
         # === ĐIỀU KHIỂN V ===
         # The robot can retain a small phase lead at the centre crossing even
         # while the two outer lobes track well.  Blend a separate longitudinal
         # gain only near the geometric centre so correcting that lead does not
         # disturb the curved outer sections.
-        distance_from_center = math.hypot(x_d - self.x0, y_d - self.y0)
         center_q = min(1.0, distance_from_center / self.CENTER_K1_RADIUS)
         center_weight = 1.0 - center_q * center_q * (3.0 - 2.0 * center_q)
         k1_control = self.k1 + center_weight * (self.CENTER_K1 - self.k1)
@@ -698,10 +785,16 @@ class BSMCEight(Node):
         else:
             w_ff_scale = self.W_FEEDFORWARD_SCALE_POSITIVE if self.W_FEEDFORWARD_SCALE_POSITIVE > 0.0 else self.W_FEEDFORWARD_SCALE
             yaw_rate_gain = self.POSITIVE_YAW_RATE_FEEDBACK_GAIN
+        center_k2_q = min(1.0, distance_from_center / self.CENTER_K2_RADIUS)
+        center_k2_weight = 1.0 - center_k2_q * center_k2_q * (3.0 - 2.0 * center_k2_q)
+        k2_control = self.k2 + center_k2_weight * (self.CENTER_K2 - self.k2)
+        center_k3_q = min(1.0, distance_from_center / self.CENTER_K3_RADIUS)
+        center_k3_weight = 1.0 - center_k3_q * center_k3_q * (3.0 - 2.0 * center_k3_q)
+        k3_control = self.k3 + center_k3_weight * (self.CENTER_K3 - self.k3)
         v_feedback = max(v_d, self.FEEDBACK_SPEED_FLOOR)
         w_cmd = (
             entry_scale * w_ff_scale * w_d
-            + v_feedback * (self.k2 * e_y + self.k3 * math.sin(e_theta))
+            + v_feedback * (k2_control * e_y + k3_control * math.sin(e_theta))
             + self.Ks2 * sat_s2
             + self.yaw_feedforward
         )

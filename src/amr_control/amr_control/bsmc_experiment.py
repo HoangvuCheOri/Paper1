@@ -356,6 +356,14 @@ def validate_run_args(args):
             raise SystemExit("--center-k1 must be >= 0 or -1 to inherit --k1")
         if args.center_k1_radius <= 0.0:
             raise SystemExit("--center-k1-radius must be > 0")
+        if args.center_k2 != -1.0 and args.center_k2 < 0.0:
+            raise SystemExit("--center-k2 must be >= 0 or -1 to inherit --k2")
+        if args.center_k2_radius <= 0.0:
+            raise SystemExit("--center-k2-radius must be > 0")
+        if args.center_k3 != -1.0 and args.center_k3 < 0.0:
+            raise SystemExit("--center-k3 must be >= 0 or -1 to inherit --k3")
+        if args.center_k3_radius <= 0.0:
+            raise SystemExit("--center-k3-radius must be > 0")
     elif args.trajectory == "square":
         if args.side_length <= 0.0:
             raise SystemExit("--side-length must be positive")
@@ -537,6 +545,10 @@ def run_experiment(args):
             "-p", f"feedback_speed_floor:={args.feedback_speed_floor}",
             "-p", f"center_k1:={args.center_k1}",
             "-p", f"center_k1_radius:={args.center_k1_radius}",
+            "-p", f"center_k2:={args.center_k2}",
+            "-p", f"center_k2_radius:={args.center_k2_radius}",
+            "-p", f"center_k3:={args.center_k3}",
+            "-p", f"center_k3_radius:={args.center_k3_radius}",
             "-p", f"v_cmd_scale:={args.v_cmd_scale}",
         ])
         controller_cmd.extend([
@@ -643,6 +655,10 @@ def run_experiment(args):
             "feedback_speed_floor": getattr(args, "feedback_speed_floor", ""),
             "center_k1": getattr(args, "center_k1", ""),
             "center_k1_radius": getattr(args, "center_k1_radius", ""),
+            "center_k2": getattr(args, "center_k2", ""),
+            "center_k2_radius": getattr(args, "center_k2_radius", ""),
+            "center_k3": getattr(args, "center_k3", ""),
+            "center_k3_radius": getattr(args, "center_k3_radius", ""),
             "radius_feedback_gain": args.radius_feedback_gain,
             "radius_position_gain": args.radius_position_gain,
             "side_length": getattr(args, "side_length", ""),
@@ -1097,6 +1113,22 @@ def build_parser():
     run.add_argument(
         "--center-k1-radius", type=float, default=None,
         help="radius in metres over which --center-k1 blends into --k1",
+    )
+    run.add_argument(
+        "--center-k2", type=float, default=None,
+        help="lateral gain near figure-8 crossings; -1 inherits --k2",
+    )
+    run.add_argument(
+        "--center-k2-radius", type=float, default=None,
+        help="radius in metres over which --center-k2 blends into --k2",
+    )
+    run.add_argument(
+        "--center-k3", type=float, default=None,
+        help="heading gain near figure-8 crossings; -1 inherits --k3",
+    )
+    run.add_argument(
+        "--center-k3-radius", type=float, default=None,
+        help="radius in metres over which --center-k3 blends into --k3",
     )
     run.add_argument(
         "--v-cmd-scale", type=float, default=None,

@@ -176,6 +176,8 @@ def analyze(input_path, output_dir=None, transient_s=5.0):
             data["desired_y"] - reference_center_y,
         ) <= 0.15
     )
+    left_to_right_center = center_region & (np.cos(data["desired_yaw"]) > 0.0)
+    right_to_left_center = center_region & (np.cos(data["desired_yaw"]) < 0.0)
 
     summary = {
         "input": str(input_path),
@@ -199,6 +201,24 @@ def analyze(input_path, output_dir=None, transient_s=5.0):
         "center_position_rmse_m": _rmse(position[center_region]),
         "center_path_rmse_m": _rmse(path_distance[center_region]),
         "center_longitudinal_bias_m": float(np.mean(longitudinal[center_region])),
+        "left_to_right_center_position_rmse_m": _rmse(
+            position[left_to_right_center]
+        ),
+        "left_to_right_center_lateral_rmse_m": _rmse(
+            lateral[left_to_right_center]
+        ),
+        "left_to_right_center_lateral_bias_m": float(
+            np.mean(lateral[left_to_right_center])
+        ),
+        "right_to_left_center_position_rmse_m": _rmse(
+            position[right_to_left_center]
+        ),
+        "right_to_left_center_lateral_rmse_m": _rmse(
+            lateral[right_to_left_center]
+        ),
+        "right_to_left_center_lateral_bias_m": float(
+            np.mean(lateral[right_to_left_center])
+        ),
         "negative_curve_lateral_bias_m": float(np.mean(lateral[negative_curve])),
         "positive_curve_lateral_bias_m": float(np.mean(lateral[positive_curve])),
         "negative_curve_heading_bias_deg": math.degrees(
@@ -289,6 +309,9 @@ def main(argv=None):
         f"near-center={100*summary['near_center_symmetry_rmse_m']:.2f} cm"
         f", crossing position/path={100*summary['center_position_rmse_m']:.2f}/"
         f"{100*summary['center_path_rmse_m']:.2f} cm"
+        f", crossing lateral L->R/R->L="
+        f"{100*summary['left_to_right_center_lateral_rmse_m']:.2f}/"
+        f"{100*summary['right_to_left_center_lateral_rmse_m']:.2f} cm"
     )
     print(f"Summary: {json_path}")
     if plot_path:

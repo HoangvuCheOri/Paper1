@@ -1,0 +1,114 @@
+paper:
+  title: Experimental BSMC Trajectory Tracking via ESP-NOW
+  nominal_period_ms: 50.0
+  output_dpi: 600
+
+runs:
+  circle_baseline:
+    label: Backstepping baseline
+    role: baseline
+    trajectory: circle
+    run_id: circle_1m_ks00_baseline
+    csv: paper_logs/gain_tuning/20260718_183445_circle_BSMC_fusion_circle_1m_ks00_baseline.csv
+    summary: paper_logs/gain_tuning/circle_reports/20260718_183445_circle_BSMC_fusion_circle_1m_ks00_baseline_circle_summary.json
+    parameters:
+      radius_m: 1.0
+      angular_speed_rad_s: 0.108
+      k1: 1.163
+      k2: 4.499
+      k3: 3.300
+      ks1: 0.0
+      ks2: 0.0
+      phi1: 1.0
+      phi2: 1.5
+
+  circle_bsmc:
+    label: BSMC
+    role: compensated
+    trajectory: circle
+    run_id: circle_1m_ks1_024_ks2_050
+    csv: paper_logs/gain_tuning/20260718_184213_circle_BSMC_fusion_circle_1m_ks1_024_ks2_050.csv
+    summary: paper_logs/gain_tuning/circle_reports/20260718_184213_circle_BSMC_fusion_circle_1m_ks1_024_ks2_050_circle_summary.json
+    parameters:
+      radius_m: 1.0
+      angular_speed_rad_s: 0.108
+      k1: 1.163
+      k2: 4.499
+      k3: 3.300
+      ks1: 0.024
+      ks2: 0.050
+      phi1: 1.0
+      phi2: 1.5
+
+  eight_final:
+    label: BSMC final
+    role: validation
+    trajectory: eight
+    run_id: eight_ck1_150_r050
+    csv: paper_logs/gain_tuning/20260718_193039_eight_BSMC_fusion_eight_ck1_150_r050.csv
+    summary: paper_logs/gain_tuning/eight_reports/20260718_193039_eight_BSMC_fusion_eight_ck1_150_r050_eight_summary.json
+    parameters:
+      amplitude_m: 1.0
+      angular_speed_rad_s: 0.07
+      trajectory_ramp_time_s: 12.0
+      k1: 0.2205844943
+      k2: 6.5
+      k3: 7.0
+      ks1: 0.03683289
+      ks2: 0.1159106176
+      phi1: 1.0
+      phi2: 1.5
+      center_k1: 1.5
+      center_k1_radius_m: 0.50
+
+  square_1m_final:
+    label: BSMC 1 m
+    role: validation
+    trajectory: square
+    run_id: square_1m_v1
+    csv: paper_logs/square_1m/20260717_165910_square_BSMC_fusion_square_1m_v1.csv
+    summary: paper_logs/square_1m/square_reports/20260717_165910_square_BSMC_fusion_square_1m_v1_square_summary.json
+    parameters:
+      side_length_m: 1.0
+      desired_speed_m_s: 0.10
+      corner_speed_m_s: 0.04
+      k1: 0.8
+      k2: 4.0
+      k3: 7.0
+      ks1: 0.08
+      ks2: 0.10
+      phi1: 1.0
+      phi2: 1.5
+
+  square_2m_final:
+    label: BSMC 2 m
+    role: validation
+    trajectory: square
+    run_id: square_2m_cross_track_damping
+    csv: paper_logs/square_2m/20260717_172205_square_BSMC_fusion_square_2m_v1_cross_track_damping.csv
+    summary: paper_logs/square_2m/square_reports/20260717_172205_square_BSMC_fusion_square_2m_v1_cross_track_damping_square_summary.json
+    parameters:
+      side_length_m: 2.0
+      desired_speed_m_s: 0.10
+      corner_speed_m_s: 0.04
+      k1: 0.8
+      k2: 6.0
+      k3: 7.0
+      ks1: 0.08
+      ks2: 0.10
+      phi1: 1.0
+      phi2: 1.5
+
+link_runs:
+  - {label: Static 5 m, condition: static, distance_m: 5, csv: paper_logs/20260712_164755_espnow_static.csv}
+  - {label: Moving 5 m, condition: moving, distance_m: 5, csv: paper_logs/20260712_164914_espnow_moving.csv}
+  - {label: Static 10 m, condition: static, distance_m: 10, csv: paper_logs/20260712_165034_espnow_static.csv}
+  - {label: Moving 10 m, condition: moving, distance_m: 10, csv: paper_logs/20260712_165146_espnow_moving.csv}
+  - {label: Static 20 m, condition: static, distance_m: 20, csv: paper_logs/20260712_165317_espnow_static.csv}
+  - {label: Moving 20 m, condition: moving, distance_m: 20, csv: paper_logs/20260712_165438_espnow_moving.csv}
+
+images:
+  overhead_setup:
+    source: paper_results/camera.jpeg
+    capture_time_local: "2026-07-12 18:41:37 +07:00"
+    treatment: raw overhead view; crop and annotate only; geometric distortion must be disclosed

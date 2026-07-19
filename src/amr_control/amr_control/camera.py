@@ -67,8 +67,11 @@ def quaternion_from_yaw(yaw_rad):
     return 0.0, 0.0, math.sin(half), math.cos(half)
 
 class CameraPoseEstimator(Node):
-    def __init__(self):
-        super().__init__('pose_estimation_publisher')
+    def __init__(self, parameter_overrides=None):
+        super().__init__(
+            'pose_estimation_publisher',
+            parameter_overrides=parameter_overrides,
+        )
         
         # Publisher chuyển sang hệ Odometry để EKF có thể đọc được
         self.pose_pub = self.create_publisher(Odometry, '/odom_camera', 10)
@@ -104,6 +107,7 @@ class CameraPoseEstimator(Node):
         self.declare_parameter('floor_homography_path', 'floor_homography.yaml')
         self.declare_parameter('homography_scale_x', 1.0)
         self.declare_parameter('homography_scale_y', 1.0)
+        self.declare_parameter('homography_debug', False)
 
         self.yaml_path = self.get_parameter('yaml_path').value
         self.draw_trajectory_enabled = bool(self.get_parameter('draw_trajectory').value)
@@ -149,6 +153,7 @@ class CameraPoseEstimator(Node):
         self.floor_homography_path = self.get_parameter('floor_homography_path').value
         self.homography_scale_x = float(self.get_parameter('homography_scale_x').value)
         self.homography_scale_y = float(self.get_parameter('homography_scale_y').value)
+        self.homography_debug = bool(self.get_parameter('homography_debug').value)
 
         self.warp_matrix = None
         self.warp_src_points = None
@@ -156,6 +161,10 @@ class CameraPoseEstimator(Node):
         self.warp_calibration_points = []
 
         self.homography_matrix = None
+        self.homography_pixel_domain = 'distorted'
+        self.homography_image_width = None
+        self.homography_image_height = None
+        self.homography_debug_counter = 0
         self.load_floor_homography()
 
         max_points = max(2, int(self.get_parameter('trajectory_max_points').value))
@@ -299,7 +308,35 @@ class CameraPoseEstimator(Node):
                 h_mat = data.get('homography_matrix')
                 if h_mat and len(h_mat) == 3:
                     self.homography_matrix = np.array(h_mat, dtype=np.float32)
-                    self.get_logger().info(f"Loaded FLOOR HOMOGRAPHY from {homography_path}")
+                    domain = str(data.get('pixel_domain', 'distorted')).strip().lower()
+                    if domain not in ('distorted', 'undistorted'):
+                        self.get_logger().warn(
+                            f"Unknown homography pixel_domain={domain!r}; using distorted."
+                        )
+                        domain = 'distorted'
+                    self.homography_pixel_domain = domain
+                    width = data.get('image_width')
+                    height = data.get('image_height')
+                    if width and height and float(width) > 0.0 and float(height) > 0.0:
+                        self.homography_image_width = float(width)
+                        self.homography_image_height = float(height)
+                    self.get_logger().info(
+                        f"Loaded FLOOR HOMOGRAPHY from {homography_path}: "
+                        f"pixel_domain={self.homography_pixel_domain}, "
+                        f"image_size={self.homography_image_width or 'legacy'}x"
+                        f"{self.homography_image_height or 'legacy'}"
+                    )
+                    if (
+                        domain == 'undistorted'
+                        and (
+                            abs(self.homography_scale_x - 1.0) > 1e-9
+                            or abs(self.homography_scale_y - 1.0) > 1e-9
+                        )
+                    ):
+                        self.get_logger().warn(
+                            "homography_scale_x/y are ignored for an undistorted-domain "
+                            "homography; recalibration replaces the legacy scale hack."
+                        )
                 else:
                     self.get_logger().warn(f"Invalid homography matrix format in {homography_path}")
             except Exception as exc:
@@ -310,6 +347,27 @@ class CameraPoseEstimator(Node):
                 f"Floor homography file not found. Searched: {searched}. "
                 "Using fallback solvePnP for XY."
             )
+
+    @staticmethod
+    def undistort_pixel(pixel_xy, camera_matrix, dist_coeffs):
+        """Return an undistorted pinhole pixel in the same image resolution."""
+        points = np.asarray([[pixel_xy]], dtype=np.float32)
+        undistorted = cv2.undistortPoints(
+            points,
+            camera_matrix,
+            dist_coeffs,
+            P=camera_matrix,
+        )
+        return np.asarray(undistorted[0, 0], dtype=np.float32)
+
+    def pixel_in_homography_resolution(self, pixel_xy, frame_width, frame_height):
+        """Scale a live pixel into the resolution used to calibrate H."""
+        pixel = np.asarray(pixel_xy, dtype=np.float32).copy()
+        if self.homography_image_width is None or self.homography_image_height is None:
+            return pixel
+        pixel[0] *= self.homography_image_width / max(float(frame_width), 1.0)
+        pixel[1] *= self.homography_image_height / max(float(frame_height), 1.0)
+        return pixel
 
     def parse_warp_points(self, text):
         if not text:
@@ -690,17 +748,61 @@ class CameraPoseEstimator(Node):
 
             if self.homography_matrix is not None:
                 # ---------------------------------------------------------
-                # SỬ DỤNG HOMOGRAPHY ĐỂ TÍNH X, Y (CỰC KỲ CHÍNH XÁC THEO SÀN)
+                # SỬ DỤNG HOMOGRAPHY ĐỂ TÍNH X, Y
                 # ---------------------------------------------------------
-                pixel_h = np.array([[tag_center[0]], [tag_center[1]], [1.0]], dtype=np.float32)
+                tag_center_raw = np.asarray(tag_center, dtype=np.float32)
+                tag_center_undistorted = self.undistort_pixel(
+                    tag_center_raw,
+                    camera_matrix,
+                    dist_coeffs,
+                )
+                if self.homography_pixel_domain == 'undistorted':
+                    tag_center_for_h = tag_center_undistorted
+                else:
+                    # Legacy YAML files were calibrated directly in the raw,
+                    # distorted pixel domain. Preserve that pairing exactly.
+                    tag_center_for_h = tag_center_raw
+
+                tag_center_for_h = self.pixel_in_homography_resolution(
+                    tag_center_for_h,
+                    w_in,
+                    h_in,
+                )
+                pixel_h = np.array(
+                    [[tag_center_for_h[0]], [tag_center_for_h[1]], [1.0]],
+                    dtype=np.float32,
+                )
                 computed = self.homography_matrix @ pixel_h
                 computed_x = float(computed[0, 0] / computed[2, 0])
                 computed_y = float(computed[1, 0] / computed[2, 0])
 
-                # Chuyển đổi sang hệ trục Toán học (X = Sang Phải, Y = Lên Trên)
-                # Áp dụng hệ số bù méo ống kính (barrel distortion compensation)
-                robot_x = computed_x * self.homography_scale_x
-                robot_y = computed_y * self.homography_scale_y
+                if self.homography_pixel_domain == 'undistorted':
+                    robot_x = computed_x
+                    robot_y = computed_y
+                else:
+                    # Compatibility only: these scalar corrections cannot
+                    # model radial distortion and are retired by a new YAML.
+                    robot_x = computed_x * self.homography_scale_x
+                    robot_y = computed_y * self.homography_scale_y
+
+                if self.homography_debug:
+                    self.homography_debug_counter += 1
+                    if self.homography_debug_counter % 25 == 0:
+                        delta = tag_center_undistorted - tag_center_raw
+                        principal = np.array(
+                            [camera_matrix[0, 2], camera_matrix[1, 2]],
+                            dtype=np.float32,
+                        )
+                        radius = float(np.linalg.norm(tag_center_raw - principal))
+                        self.get_logger().info(
+                            "Homography pixel diagnostic: "
+                            f"raw=({tag_center_raw[0]:.1f},{tag_center_raw[1]:.1f}), "
+                            f"undist=({tag_center_undistorted[0]:.1f},"
+                            f"{tag_center_undistorted[1]:.1f}), "
+                            f"delta=({delta[0]:+.2f},{delta[1]:+.2f})px, "
+                            f"radius={radius:.1f}px, domain={self.homography_pixel_domain}, "
+                            f"xy=({robot_x:+.3f},{robot_y:+.3f})m"
+                        )
             else:
                 # ---------------------------------------------------------
                 # DÙNG SOLVEPNP DỰ PHÒNG NẾU KHÔNG CÓ FILE HOMOGRAPHY
@@ -896,9 +998,9 @@ class CameraPoseEstimator(Node):
             self.clear_trajectory_overlay()
             self.get_logger().info(f"trajectory_scale={self.trajectory_scale:.3f}")
 
-def main(args=None):
+def main(args=None, parameter_overrides=None):
     rclpy.init(args=args)
-    node = CameraPoseEstimator()
+    node = CameraPoseEstimator(parameter_overrides=parameter_overrides)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
